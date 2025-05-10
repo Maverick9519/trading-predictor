@@ -9,7 +9,11 @@ from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.compose import TransformedTargetRegressor
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
 from flask import Flask
 import logging
 import io
@@ -18,7 +22,6 @@ import os
 import datetime
 import time
 import requests
-import asyncio
 import threading
 
 # === Telegram Token ===
@@ -209,17 +212,16 @@ async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === Головна функція ===
 
 def run_flask():
-    port = int(os.environ.get("PORT", 5000))
-    flask_app.run(host="0.0.0.0", port=port)
+    flask_app.run(host="0.0.0.0", port=10000)
 
-async def run_bot_and_server():
+def run_bot_and_server():
     threading.Thread(target=run_flask).start()
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("predict", predict))
     application.add_handler(CommandHandler("model", set_model))
     application.add_handler(CommandHandler("log", show_log))
-    await application.run_polling()
+    application.run_polling()
 
 if __name__ == '__main__':
-    asyncio.run(run_bot_and_server())
+    run_bot_and_server()
