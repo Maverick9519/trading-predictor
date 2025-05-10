@@ -25,7 +25,7 @@ import requests
 import asyncio
 
 # === Telegram Token ===
-TELEGRAM_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
+TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
 
 # === Файли ===
 MODEL_FILE = "user_models.json"
