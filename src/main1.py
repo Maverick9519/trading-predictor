@@ -63,7 +63,7 @@ def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_pr
         "user_id": user_id,
         "model_type": model_type,
         "mse": round(mse, 4),
-        "prediction_preview": list(np.round(predictions[:3], 2)),
+        "prediction_preview": list(np.round(predictions[:4], 2)),
         "prediction_sum": round(total_prediction, 4),
         "elapsed_time": round(elapsed_time, 2)
     }])
