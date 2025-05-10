@@ -14,6 +14,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
+from flask import Flask
 import logging
 import io
 import json
@@ -21,12 +22,10 @@ import os
 import datetime
 import time
 import requests
-import threading
 import asyncio
-from flask import Flask
 
 # === Telegram Token ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TOKEN_HERE")
+TELEGRAM_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
 
 # === Файли ===
 MODEL_FILE = "user_models.json"
@@ -38,14 +37,14 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# === Flask веб-сервер ===
-app = Flask(__name__)
+# === Flask app ===
+flask_app = Flask(__name__)
 
-@app.route('/')
+@flask_app.route('/')
 def index():
-    return "Trading Predictor веб-сервер працює!"
+    return 'Bot and Web App are running!'
 
-# === Завантаження/збереження моделей ===
+# === Завантаження моделей ===
 def load_user_models():
     if os.path.exists(MODEL_FILE):
         with open(MODEL_FILE, 'r') as f:
@@ -58,7 +57,6 @@ def save_user_models(data):
 
 user_models = load_user_models()
 
-# === Логування прогнозів ===
 def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_prediction):
     df_log = pd.DataFrame([{
         "timestamp": datetime.datetime.now().isoformat(),
@@ -74,7 +72,6 @@ def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_pr
     else:
         df_log.to_csv(LOG_FILE, mode='w', header=True, index=False)
 
-# === Завантаження крипто-даних ===
 def load_crypto_data():
     url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=100"
     response = requests.get(url)
@@ -97,7 +94,6 @@ def load_crypto_data():
     df['Target'] = df['Price'].shift(-1)
     return df.dropna()
 
-# === Тренування моделі ===
 def train_model(df, model_type='LinearRegression'):
     features = ['Price', 'Moving_Avg_10', 'Moving_Avg_50', 'Volatility', 'RSI']
     X = df[features]
@@ -121,7 +117,6 @@ def train_model(df, model_type='LinearRegression'):
 
     return model, df.loc[y_test.index], y_test, predictions, mse
 
-# === Побудова графіка ===
 def plot_prediction(df_test, y_test, predictions):
     plt.figure(figsize=(10, 5))
     plt.plot(df_test['Date'], y_test.values, label='Real')
@@ -137,7 +132,6 @@ def plot_prediction(df_test, y_test, predictions):
     plt.close()
     return buf
 
-# === Прогнозування ===
 def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymous'):
     start_time = time.time()
     df = load_crypto_data()
@@ -158,7 +152,8 @@ def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymo
     )
     return text, plot_buf
 
-# === Telegram Handlers ===
+# === Telegram команди ===
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я трейдинг-прогнозатор бот.\n"
@@ -176,7 +171,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, plot_buf = get_prediction_text_and_plot(model_type, user_id)
         await update.message.reply_text(text)
         await update.message.reply_photo(photo=plot_buf)
-    except Exception:
+    except Exception as e:
         await update.message.reply_text("Виникла помилка під час прогнозування.")
         logging.exception("Error during prediction")
 
@@ -214,20 +209,21 @@ async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     await update.message.reply_text(log_text)
 
-# === Telegram бот у окремому потоці ===
-def run_telegram_bot():
-    asyncio.run(start_telegram_bot())
-
-async def start_telegram_bot():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("predict", predict))
-    app.add_handler(CommandHandler("model", set_model))
-    app.add_handler(CommandHandler("log", show_log))
-    print("Telegram-бот запущено...")
-    await app.run_polling()
-
 # === Головна функція ===
+async def run_bot_and_server():
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("predict", predict))
+    application.add_handler(CommandHandler("model", set_model))
+    application.add_handler(CommandHandler("log", show_log))
+
+    # Запускаємо Flask і Telegram одночасно
+    async def start_flask():
+        from threading import Thread
+        Thread(target=lambda: flask_app.run(host="0.0.0.0", port=10000)).start()
+
+    await start_flask()
+    await application.run_polling()
+
 if __name__ == '__main__':
-    threading.Thread(target=run_telegram_bot).start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    asyncio.run(run_bot_and_server())
