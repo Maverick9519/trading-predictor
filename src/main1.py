@@ -24,27 +24,22 @@ import time
 import requests
 import threading
 
-# === Telegram Token ===
 TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
 
-# === Файли ===
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
 
-# === Логування ===
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# === Flask app ===
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def index():
     return 'Bot and Web App are running!'
 
-# === Завантаження моделей ===
 def load_user_models():
     if os.path.exists(MODEL_FILE):
         with open(MODEL_FILE, 'r') as f:
@@ -72,10 +67,21 @@ def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_pr
     else:
         df_log.to_csv(LOG_FILE, mode='w', header=True, index=False)
 
+# === Виправлена функція завантаження даних ===
 def load_crypto_data():
     url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=100"
     response = requests.get(url)
-    data = response.json()
+
+    if response.status_code != 200:
+        raise Exception(f"Помилка при запиті до CoinGecko API: {response.status_code}")
+
+    try:
+        data = response.json()
+    except Exception:
+        raise Exception("Не вдалося розпарсити відповідь CoinGecko API.")
+
+    if 'prices' not in data:
+        raise Exception("Відсутні дані 'prices' у відповіді CoinGecko.")
 
     prices = np.array([item[1] for item in data['prices']])
     timestamps = [datetime.datetime.fromtimestamp(item[0] / 1000) for item in data['prices']]
@@ -208,8 +214,6 @@ async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Прогноз: {row['prediction_preview']}\n"
         )
     await update.message.reply_text(log_text)
-
-# === Головна функція ===
 
 def run_flask():
     flask_app.run(host="0.0.0.0", port=10000)
