@@ -21,9 +21,11 @@ import os
 import datetime
 import time
 import requests
+import threading
+from flask import Flask
 
 # === Telegram Token ===
-TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "your-telegram-token-here")
 
 # === Файли ===
 MODEL_FILE = "user_models.json"
@@ -35,7 +37,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-
 # === Завантаження моделей ===
 def load_user_models():
     if os.path.exists(MODEL_FILE):
@@ -43,15 +44,12 @@ def load_user_models():
             return json.load(f)
     return {}
 
-
 # === Збереження моделей ===
 def save_user_models(data):
     with open(MODEL_FILE, 'w') as f:
         json.dump(data, f)
 
-
 user_models = load_user_models()
-
 
 # === Логування прогнозів ===
 def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_prediction):
@@ -61,14 +59,13 @@ def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_pr
         "model_type": model_type,
         "mse": round(mse, 4),
         "prediction_preview": list(np.round(predictions[:3], 2)),
-        "prediction_sum": round(total_prediction, 4),  # округлення до 3 знаків після коми
+        "prediction_sum": round(total_prediction, 4),
         "elapsed_time": round(elapsed_time, 2)
     }])
     if os.path.exists(LOG_FILE):
         df_log.to_csv(LOG_FILE, mode='a', header=False, index=False)
     else:
         df_log.to_csv(LOG_FILE, mode='w', header=True, index=False)
-
 
 # === Завантаження крипто-даних ===
 def load_crypto_data():
@@ -92,7 +89,6 @@ def load_crypto_data():
 
     df['Target'] = df['Price'].shift(-1)
     return df.dropna()
-
 
 # === Тренування моделі ===
 def train_model(df, model_type='LinearRegression'):
@@ -118,7 +114,6 @@ def train_model(df, model_type='LinearRegression'):
 
     return model, df.loc[y_test.index], y_test, predictions, mse
 
-
 # === Побудова графіка ===
 def plot_prediction(df_test, y_test, predictions):
     plt.figure(figsize=(10, 5))
@@ -135,7 +130,6 @@ def plot_prediction(df_test, y_test, predictions):
     plt.close()
     return buf
 
-
 # === Прогнозування та графік ===
 def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymous'):
     start_time = time.time()
@@ -145,13 +139,8 @@ def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymo
     elapsed_time = time.time() - start_time
     total_prediction = np.sum(predictions)
     log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_prediction)
-
-    # Переміщаємо десяткову крапку вліво (ділимо на 10)
-    total_prediction = total_prediction / 10
-
-    # Форматуємо суму прогнозу з трьома знаками після коми
+    total_prediction /= 10
     total_prediction_formatted = "{:.3f}".format(total_prediction)
-
     text = (
         f"Модель: {model_type}\n"
         f"Mean Squared Error: {mse:.2f}\n"
@@ -159,7 +148,6 @@ def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymo
         f"Час прогнозування: {elapsed_time:.2f} сек."
     )
     return text, plot_buf
-
 
 # === Telegram: /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -170,7 +158,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/model [LinearRegression|SVR|RandomForest] — обрати модель\n"
         "/log — останні 5 прогнозів"
     )
-
 
 # === Telegram: /predict ===
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -185,7 +172,6 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Виникла помилка під час прогнозування.")
         logging.exception("Error during prediction")
 
-
 # === Telegram: /model ===
 async def set_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -199,7 +185,6 @@ async def set_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Доступні моделі: LinearRegression, SVR, RandomForest")
     else:
         await update.message.reply_text("Використання: /model LinearRegression")
-
 
 # === Telegram: /log ===
 async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -223,17 +208,27 @@ async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     await update.message.reply_text(log_text)
 
+# === Flask веб-сервер ===
+flask_app = Flask(__name__)
 
-# === Запуск бота ===
-def main():
+@flask_app.route('/')
+def index():
+    return "🟢 Telegram-бот і Flask веб-сервер працюють одночасно!"
+
+# === Запуск Telegram-бота у фоновому потоці ===
+def run_telegram_bot():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
     app.add_handler(CommandHandler("model", set_model))
     app.add_handler(CommandHandler("log", show_log))
-    print("Бот запущено...")
+    print("Telegram-бот запущено...")
     app.run_polling()
 
-
+# === Основний запуск ===
 if __name__ == '__main__':
-    main()
+    bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
+    bot_thread.start()
+
+    port = int(os.environ.get("PORT", 5000))
+    flask_app.run(host="0.0.0.0", port=port)
