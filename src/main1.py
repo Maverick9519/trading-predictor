@@ -23,6 +23,7 @@ import datetime
 import time
 import requests
 import asyncio
+import threading
 
 # === Telegram Token ===
 TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
@@ -210,20 +211,20 @@ async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(log_text)
 
 # === Головна функція ===
-async def run_bot_and_server():
+
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=10000)
+
+async def main():
+    threading.Thread(target=run_flask).start()
+
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("predict", predict))
     application.add_handler(CommandHandler("model", set_model))
     application.add_handler(CommandHandler("log", show_log))
 
-    # Запускаємо Flask і Telegram одночасно
-    async def start_flask():
-        from threading import Thread
-        Thread(target=lambda: flask_app.run(host="0.0.0.0", port=10000)).start()
-
-    await start_flask()
     await application.run_polling()
 
 if __name__ == '__main__':
-    asyncio.run(run_bot_and_server())
+    asyncio.run(main())
