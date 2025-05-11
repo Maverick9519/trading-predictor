@@ -1,3 +1,5 @@
+# app.py
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,41 +9,37 @@ from keras.layers import LSTM, Dense, Dropout
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from binance.client import Client
+from flask import Flask
 import logging
 import io
 import datetime
+import threading
 import os
 import time
-import threading
-import requests
-from flask import Flask
 
 # === Telegram Token ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "your-telegram-token")  # Заміни на змінну середовища або встав значення напряму
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "your-token-here")
 
 # === Binance API client ===
 BINANCE_CLIENT = Client()
 
-# === Flask сервер для Render і UptimeRobot ===
-app_web = Flask(__name__)
+# === Flask app for Render ping ===
+flask_app = Flask(__name__)
 
-@app_web.route("/")
+@flask_app.route('/')
 def home():
-    return "✅ Bot is alive"
+    return "Bot is alive"
 
-# === Logging ===
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-
-# === Keep alive ping ===
+# === Keep-alive ping ===
 def keep_alive():
     def ping():
         while True:
             try:
-                requests.get("https://your-render-app-name.onrender.com")  # заміни на свій URL
+                requests.get("https://your-render-url.onrender.com")  # Replace with real URL
                 print("🟢 Self-ping successful")
             except Exception as e:
                 print("🔴 Self-ping failed:", e)
-            time.sleep(300)  # кожні 5 хвилин
+            time.sleep(300)
 
     threading.Thread(target=ping, daemon=True).start()
 
@@ -86,7 +84,7 @@ def predict_lstm(df):
     predicted_price = scaler.inverse_transform([[prediction]])[0][0]
     return predicted_price
 
-# === Plot function ===
+# === Plot ===
 def plot_latest_data(df):
     plt.figure(figsize=(10, 4))
     plt.plot(df['Date'], df['Price'], label='Real Price')
@@ -101,7 +99,7 @@ def plot_latest_data(df):
     plt.close()
     return buf
 
-# === Telegram bot handlers ===
+# === Telegram handlers ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я бот прогнозування ціни BTC на основі LSTM з Binance.\n"
@@ -129,14 +127,16 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("Prediction error")
         await update.message.reply_text(f"Помилка: {e}")
 
-# === Main bot runner ===
+# === Main ===
 def run_bot():
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("predict", predict))
+
+    # Start keep-alive and bot
     keep_alive()
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("predict", predict))
-    threading.Thread(target=app.run_polling, daemon=True).start()
+    threading.Thread(target=flask_app.run, kwargs={"host": "0.0.0.0", "port": int(os.getenv("PORT", 10000))}, daemon=True).start()
+    application.run_polling()
 
 if __name__ == '__main__':
     run_bot()
-    app_web.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
