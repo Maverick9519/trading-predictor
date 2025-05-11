@@ -1,4 +1,4 @@
-# app.py
+# telegram_crypto_lstm_bot_binance.py
 
 import pandas as pd
 import numpy as np
@@ -9,37 +9,33 @@ from keras.layers import LSTM, Dense, Dropout
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from binance.client import Client
-from flask import Flask
 import logging
 import io
 import datetime
-import threading
 import os
 import time
+import threading
+import requests
 
 # === Telegram Token ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "your-token-here")
+TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
 
 # === Binance API client ===
 BINANCE_CLIENT = Client()
 
-# === Flask app for Render ping ===
-flask_app = Flask(__name__)
+# === Logging ===
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-@flask_app.route('/')
-def home():
-    return "Bot is alive"
-
-# === Keep-alive ping ===
+# === Keep Render alive by pinging itself ===
 def keep_alive():
     def ping():
         while True:
             try:
-                requests.get("https://your-render-url.onrender.com")  # Replace with real URL
+                requests.get("https://trading-predictor.onrender.com")  # ← Твій справжній URL
                 print("🟢 Self-ping successful")
             except Exception as e:
                 print("🔴 Self-ping failed:", e)
-            time.sleep(300)
+            time.sleep(300)  # кожні 5 хвилин
 
     threading.Thread(target=ping, daemon=True).start()
 
@@ -84,7 +80,7 @@ def predict_lstm(df):
     predicted_price = scaler.inverse_transform([[prediction]])[0][0]
     return predicted_price
 
-# === Plot ===
+# === Plot function ===
 def plot_latest_data(df):
     plt.figure(figsize=(10, 4))
     plt.plot(df['Date'], df['Price'], label='Real Price')
@@ -99,10 +95,10 @@ def plot_latest_data(df):
     plt.close()
     return buf
 
-# === Telegram handlers ===
+# === Telegram bot handlers ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привіт! Я бот прогнозування ціни BTC на основі LSTM з Binance.\n"
+        "Привіт! Я бот прогнозування ціни BTC на основі LSTM з даними з Binance.\n"
         "/predict — отримати прогноз."
     )
 
@@ -129,14 +125,11 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Main ===
 def run_bot():
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("predict", predict))
-
-    # Start keep-alive and bot
-    keep_alive()
-    threading.Thread(target=flask_app.run, kwargs={"host": "0.0.0.0", "port": int(os.getenv("PORT", 10000))}, daemon=True).start()
-    application.run_polling()
+    keep_alive()  # запускаємо автопінг
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("predict", predict))
+    app.run_polling()
 
 if __name__ == '__main__':
     run_bot()
