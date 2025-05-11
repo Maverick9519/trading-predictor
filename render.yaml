@@ -1,9 +1,11 @@
 services:
-  - type: worker
-    name: trading-predictor
+  - type: web
+    name: crypto-predictor-bot
     env: python
-    region: frankfurt
     plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python main.py"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: TELEGRAM_TOKEN
+        value: "твій_токен_бота"
     autoDeploy: true
