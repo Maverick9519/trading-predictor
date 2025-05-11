@@ -21,21 +21,20 @@ import os
 import datetime
 import time
 import requests
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.optimizers import Adam
 
-# === Telegram Token ===
 TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
 
-# === Файли ===
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
 
-# === Логування ===
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# === Завантаження моделей ===
 def load_user_models():
     if os.path.exists(MODEL_FILE):
         with open(MODEL_FILE, 'r') as f:
@@ -64,7 +63,7 @@ def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_pr
         df_log.to_csv(LOG_FILE, mode='w', header=True, index=False)
 
 def load_crypto_data():
-    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=180"
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=100"
     response = requests.get(url)
     data = response.json()
 
@@ -72,11 +71,9 @@ def load_crypto_data():
     timestamps = [datetime.datetime.fromtimestamp(item[0] / 1000) for item in data['prices']]
     df = pd.DataFrame({'Date': timestamps, 'Price': prices})
 
-    df['EMA_10'] = df['Price'].ewm(span=10, adjust=False).mean()
-    df['EMA_50'] = df['Price'].ewm(span=50, adjust=False).mean()
-    df['Momentum'] = df['Price'].diff(4)
+    df['Moving_Avg_10'] = df['Price'].rolling(window=10).mean()
+    df['Moving_Avg_50'] = df['Price'].rolling(window=50).mean()
     df['Volatility'] = df['Price'].pct_change().rolling(window=10).std()
-    df['Returns'] = df['Price'].pct_change()
 
     delta = df['Price'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
@@ -87,33 +84,57 @@ def load_crypto_data():
     df['Target'] = df['Price'].shift(-1)
     return df.dropna()
 
+def create_sequences(X, y, seq_length):
+    X_seq, y_seq = [], []
+    for i in range(len(X) - seq_length):
+        X_seq.append(X[i:i+seq_length])
+        y_seq.append(y[i+seq_length])
+    return np.array(X_seq), np.array(y_seq)
+
 def train_model(df, model_type='LinearRegression'):
-    features = ['Price', 'EMA_10', 'EMA_50', 'Momentum', 'Volatility', 'RSI', 'Returns']
-    X = df[features]
-    y = df['Target']
+    features = ['Price', 'Moving_Avg_10', 'Moving_Avg_50', 'Volatility', 'RSI']
+    X = df[features].values
+    y = df['Target'].values
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
 
-    scaler_X = StandardScaler()
-    X_train_scaled = scaler_X.fit_transform(X_train)
-    X_test_scaled = scaler_X.transform(X_test)
+    if model_type == 'LSTM':
+        seq_length = 10
+        X_seq, y_seq = create_sequences(X_scaled, y, seq_length)
+        split = int(0.8 * len(X_seq))
+        X_train, X_test = X_seq[:split], X_seq[split:]
+        y_train, y_test = y_seq[:split], y_seq[split:]
 
-    scaler_y = StandardScaler()
-    y_train_scaled = scaler_y.fit_transform(y_train.values.reshape(-1, 1)).ravel()
+        model = Sequential()
+        model.add(LSTM(64, input_shape=(X_train.shape[1], X_train.shape[2])))
+        model.add(Dense(1))
+        model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+
+        model.fit(X_train, y_train, epochs=20, batch_size=16, verbose=0)
+        predictions = model.predict(X_test).flatten()
+        mse = mean_squared_error(y_test, predictions)
+
+        df_test = df.iloc[-len(y_test):].copy()
+        return model, df_test, y_test, predictions, mse
+
+    X_scaled = scaler.fit_transform(X)
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, shuffle=False, test_size=0.2)
 
     if model_type == 'SVR':
-        base_model = SVR(C=100, gamma=0.1, kernel='rbf')
+        base_model = SVR()
     elif model_type == 'RandomForest':
-        base_model = RandomForestRegressor(n_estimators=200, max_depth=10, random_state=42)
+        base_model = RandomForestRegressor(n_estimators=100)
     else:
         base_model = LinearRegression()
 
-    model = base_model.fit(X_train_scaled, y_train_scaled)
-    predictions_scaled = model.predict(X_test_scaled)
-    predictions = scaler_y.inverse_transform(predictions_scaled.reshape(-1, 1)).ravel()
-
+    model = TransformedTargetRegressor(regressor=base_model, transformer=StandardScaler())
+    model.fit(X_train, y_train)
+    predictions = model.predict(X_test)
     mse = mean_squared_error(y_test, predictions)
-    return model, df.loc[y_test.index], y_test, predictions, mse
+
+    df_test = df.iloc[-len(y_test):].copy()
+    return model, df_test, y_test, predictions, mse
 
 def plot_prediction(df_test, y_test, predictions):
     plt.figure(figsize=(10, 5))
@@ -150,14 +171,12 @@ def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymo
     )
     return text, plot_buf
 
-# === Telegram команди ===
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я трейдинг-прогнозатор бот.\n"
         "Команди:\n"
         "/predict — отримати прогноз\n"
-        "/model [LinearRegression|SVR|RandomForest] — обрати модель\n"
+        "/model [LinearRegression|SVR|RandomForest|LSTM] — обрати модель\n"
         "/log — останні 5 прогнозів"
     )
 
@@ -177,12 +196,12 @@ async def set_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if context.args:
         model = context.args[0]
-        if model in ['LinearRegression', 'SVR', 'RandomForest']:
+        if model in ['LinearRegression', 'SVR', 'RandomForest', 'LSTM']:
             user_models[user_id] = model
             save_user_models(user_models)
             await update.message.reply_text(f"Модель встановлено: {model}")
         else:
-            await update.message.reply_text("Доступні моделі: LinearRegression, SVR, RandomForest")
+            await update.message.reply_text("Доступні моделі: LinearRegression, SVR, RandomForest, LSTM")
     else:
         await update.message.reply_text("Використання: /model LinearRegression")
 
@@ -206,8 +225,6 @@ async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Прогноз: {row['prediction_preview']}\n"
         )
     await update.message.reply_text(log_text)
-
-# === Головна функція ===
 
 def run_bot_and_server():
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
