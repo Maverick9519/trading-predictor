@@ -1,113 +1,115 @@
-import os
-import time
-import numpy as np
+# telegram_crypto_lstm_bot.py
+
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-from io import BytesIO
-import requests
-import telebot
+from sklearn.preprocessing import MinMaxScaler
 from keras.models import Sequential
 from keras.layers import LSTM, Dense, Dropout
-from sklearn.preprocessing import MinMaxScaler
-from datetime import datetime
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import logging
+import io
+import requests
+import datetime
+import time
+import os
 
-TOKEN = os.environ.get('BOT_TOKEN')
-bot = telebot.TeleBot(TOKEN)
+# === Telegram Token ===
+TELEGRAM_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
 
-# Завантаження даних
+# === Logging ===
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# === Load live data from CoinGecko ===
 def load_crypto_data():
     url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=30"
     response = requests.get(url)
     data = response.json()
-    try:
-        prices = np.array([item[1] for item in data['prices']])
-        timestamps = [datetime.fromtimestamp(item[0] / 1000.0) for item in data['prices']]
-        return prices.reshape(-1, 1), timestamps
-    except KeyError as e:
-        raise ValueError(f"Неможливо обробити дані: {e}")
 
-# Підготовка даних для LSTM
-def prepare_data(data, seq_length=10):
+    prices = [x[1] for x in data['prices']]
+    timestamps = [datetime.datetime.fromtimestamp(x[0] / 1000) for x in data['prices']]
+    df = pd.DataFrame({"Date": timestamps, "Price": prices})
+    return df
+
+# === LSTM prediction ===
+def create_dataset(series, look_back=10):
     X, y = [], []
-    for i in range(len(data) - seq_length):
-        X.append(data[i:i+seq_length])
-        y.append(data[i+seq_length])
+    for i in range(len(series) - look_back):
+        X.append(series[i:(i + look_back)])
+        y.append(series[i + look_back])
     return np.array(X), np.array(y)
 
-# Побудова LSTM моделі
-def create_lstm_model(input_shape):
+def predict_lstm(df):
+    scaler = MinMaxScaler()
+    scaled = scaler.fit_transform(df[['Price']].values)
+    look_back = 10
+    X, y = create_dataset(scaled, look_back)
+    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
+
     model = Sequential()
-    model.add(LSTM(50, return_sequences=True, input_shape=input_shape))
+    model.add(LSTM(50, return_sequences=True, input_shape=(look_back, 1)))
     model.add(Dropout(0.2))
     model.add(LSTM(50))
     model.add(Dropout(0.2))
     model.add(Dense(1))
     model.compile(optimizer='adam', loss='mean_squared_error')
-    return model
+    model.fit(X, y, epochs=5, batch_size=16, verbose=0)
 
-# Прогноз та побудова графіка
-def get_prediction_text_and_plot(user_id):
-    prices, timestamps = load_crypto_data()
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_prices = scaler.fit_transform(prices)
-
-    X, y = prepare_data(scaled_prices)
-    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
-
-    model = create_lstm_model((X.shape[1], 1))
-    model.fit(X, y, epochs=20, batch_size=32, verbose=0)
-
-    # Прогноз
-    last_sequence = scaled_prices[-10:]
-    last_sequence = np.reshape(last_sequence, (1, 10, 1))
+    last_sequence = scaled[-look_back:].reshape((1, look_back, 1))
     prediction = model.predict(last_sequence)[0][0]
     predicted_price = scaler.inverse_transform([[prediction]])[0][0]
+    return predicted_price
 
-    # Побудова графіка
-    predicted_prices = model.predict(X)
-    predicted_prices = scaler.inverse_transform(predicted_prices)
-    real_prices = scaler.inverse_transform(y.reshape(-1, 1))
-
-    plot_buf = BytesIO()
-    plt.figure(figsize=(10, 5))
-    plt.plot(timestamps[-len(real_prices):], real_prices, label='Real')
-    plt.plot(timestamps[-len(predicted_prices):], predicted_prices, label='Predicted')
-    plt.title('Crypto Price Prediction')
+# === Plot function ===
+def plot_latest_data(df):
+    plt.figure(figsize=(10, 4))
+    plt.plot(df['Date'], df['Price'], label='Real Price')
+    plt.title('Bitcoin Price - Last 30 Days')
     plt.xlabel('Date')
-    plt.ylabel('Price')
+    plt.ylabel('Price (USD)')
+    plt.xticks(rotation=45)
     plt.legend()
-    plt.tight_layout()
-    plt.savefig(plot_buf, format='png')
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
     plt.close()
-    plot_buf.seek(0)
+    return buf
 
-    text = (
-        f"Модель: LSTM\n"
-        f"Останнє передбачене значення: {predicted_price:.2f} USD\n"
-        f"Дата: {timestamps[-1].strftime('%Y-%m-%d %H:%M:%S')}"
+# === Telegram bot handlers ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Привіт! Я бот прогнозування ціни BTC на основі LSTM.\n"
+        "/predict — отримати прогноз."
     )
-    return text, plot_buf
 
-# Обробка команди /start
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.reply_to(message, "Привіт! Я бот для прогнозування ціни BTC. Введи /predict, щоб отримати прогноз.")
-
-# Обробка команди /predict
-@bot.message_handler(commands=['predict'])
-def predict(message):
+async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Отримання даних та прогнозування...")
     try:
-        start_time = time.time()
-        text, plot = get_prediction_text_and_plot(message.chat.id)
-        end_time = time.time()
-        duration = end_time - start_time
+        df = load_crypto_data()
+        predicted_price = predict_lstm(df)
+        now_price = df['Price'].iloc[-1]
+        change = predicted_price - now_price
+        change_pct = (change / now_price) * 100
 
-        text += f"\nЧас прогнозування: {duration:.2f} сек."
-        bot.send_message(message.chat.id, text)
-        bot.send_photo(message.chat.id, photo=plot)
+        plot_buf = plot_latest_data(df)
+        text = (
+            f"Поточна ціна: ${now_price:.2f}\n"
+            f"Прогноз через 1 крок: ${predicted_price:.2f}\n"
+            f"Зміна: ${change:.2f} ({change_pct:.2f}%)"
+        )
+        await update.message.reply_text(text)
+        await update.message.reply_photo(photo=plot_buf)
     except Exception as e:
-        bot.send_message(message.chat.id, f"Помилка: {e}")
+        logging.exception("Prediction error")
+        await update.message.reply_text(f"Помилка: {e}")
 
-# Запуск
+# === Main ===
+def run_bot():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("predict", predict))
+    app.run_polling()
+
 if __name__ == '__main__':
-    bot.polling(none_stop=True)
+    run_bot()
