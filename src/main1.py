@@ -1,5 +1,3 @@
-# telegram_crypto_lstm_bot_binance.py
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,11 +9,11 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from binance.client import Client
 import logging
 import io
-import datetime
-import os
 import time
 import threading
 import requests
+from flask import Flask
+import asyncio
 
 # === Telegram Token ===
 TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
@@ -26,17 +24,26 @@ BINANCE_CLIENT = Client()
 # === Logging ===
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
+# === Flask Server (для Render ping) ===
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    return "✅ Бот працює", 200
+
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=10000)
+
 # === Keep Render alive by pinging itself ===
 def keep_alive():
     def ping():
         while True:
             try:
-                requests.get("https://trading-predictor.onrender.com")  # ← Твій справжній URL
+                requests.get("https://trading-predictor.onrender.com")
                 print("🟢 Self-ping successful")
             except Exception as e:
                 print("🔴 Self-ping failed:", e)
-            time.sleep(300)  # кожні 5 хвилин
-
+            time.sleep(300)
     threading.Thread(target=ping, daemon=True).start()
 
 # === Load live data from Binance ===
@@ -123,13 +130,17 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("Prediction error")
         await update.message.reply_text(f"Помилка: {e}")
 
-# === Main ===
-def run_bot():
-    keep_alive()  # запускаємо автопінг
+# === Run everything ===
+def run_all():
+    # Запуск Flask у потоці
+    threading.Thread(target=run_flask, daemon=True).start()
+    keep_alive()
+
+    # Запуск Telegram-бота
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
     app.run_polling()
 
 if __name__ == '__main__':
-    run_bot()
+    run_all()
