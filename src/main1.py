@@ -64,7 +64,7 @@ def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_pr
         df_log.to_csv(LOG_FILE, mode='w', header=True, index=False)
 
 def load_crypto_data():
-    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=100"
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=180"
     response = requests.get(url)
     data = response.json()
 
@@ -72,9 +72,11 @@ def load_crypto_data():
     timestamps = [datetime.datetime.fromtimestamp(item[0] / 1000) for item in data['prices']]
     df = pd.DataFrame({'Date': timestamps, 'Price': prices})
 
-    df['Moving_Avg_10'] = df['Price'].rolling(window=10).mean()
-    df['Moving_Avg_50'] = df['Price'].rolling(window=50).mean()
+    df['EMA_10'] = df['Price'].ewm(span=10, adjust=False).mean()
+    df['EMA_50'] = df['Price'].ewm(span=50, adjust=False).mean()
+    df['Momentum'] = df['Price'].diff(4)
     df['Volatility'] = df['Price'].pct_change().rolling(window=10).std()
+    df['Returns'] = df['Price'].pct_change()
 
     delta = df['Price'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
@@ -86,26 +88,31 @@ def load_crypto_data():
     return df.dropna()
 
 def train_model(df, model_type='LinearRegression'):
-    features = ['Price', 'Moving_Avg_10', 'Moving_Avg_50', 'Volatility', 'RSI']
+    features = ['Price', 'EMA_10', 'EMA_50', 'Momentum', 'Volatility', 'RSI', 'Returns']
     X = df[features]
     y = df['Target']
 
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, shuffle=False, test_size=0.2)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
+
+    scaler_X = StandardScaler()
+    X_train_scaled = scaler_X.fit_transform(X_train)
+    X_test_scaled = scaler_X.transform(X_test)
+
+    scaler_y = StandardScaler()
+    y_train_scaled = scaler_y.fit_transform(y_train.values.reshape(-1, 1)).ravel()
 
     if model_type == 'SVR':
-        base_model = SVR()
+        base_model = SVR(C=100, gamma=0.1, kernel='rbf')
     elif model_type == 'RandomForest':
-        base_model = RandomForestRegressor(n_estimators=100)
+        base_model = RandomForestRegressor(n_estimators=200, max_depth=10, random_state=42)
     else:
         base_model = LinearRegression()
 
-    model = TransformedTargetRegressor(regressor=base_model, transformer=StandardScaler())
-    model.fit(X_train, y_train)
-    predictions = model.predict(X_test)
-    mse = mean_squared_error(y_test, predictions)
+    model = base_model.fit(X_train_scaled, y_train_scaled)
+    predictions_scaled = model.predict(X_test_scaled)
+    predictions = scaler_y.inverse_transform(predictions_scaled.reshape(-1, 1)).ravel()
 
+    mse = mean_squared_error(y_test, predictions)
     return model, df.loc[y_test.index], y_test, predictions, mse
 
 def plot_prediction(df_test, y_test, predictions):
