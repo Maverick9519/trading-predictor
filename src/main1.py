@@ -13,15 +13,31 @@ import logging
 import io
 import datetime
 import os
+import time
+import threading
+import requests
 
 # === Telegram Token ===
 TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
 
-# === Binance API keys (public use - not required for historical data) ===
+# === Binance API client ===
 BINANCE_CLIENT = Client()
 
 # === Logging ===
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# === Keep Render alive by pinging itself ===
+def keep_alive():
+    def ping():
+        while True:
+            try:
+                requests.get("https://your-render-app-name.onrender.com")  # заміни на свій URL
+                print("🟢 Self-ping successful")
+            except Exception as e:
+                print("🔴 Self-ping failed:", e)
+            time.sleep(300)  # кожні 5 хвилин
+
+    threading.Thread(target=ping, daemon=True).start()
 
 # === Load live data from Binance ===
 def load_crypto_data():
@@ -109,6 +125,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Main ===
 def run_bot():
+    keep_alive()  # запускаємо автопінг
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
