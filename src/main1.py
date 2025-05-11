@@ -21,20 +21,21 @@ import os
 import datetime
 import time
 import requests
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
-from tensorflow.keras.optimizers import Adam
 
+# === Telegram Token ===
 TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
 
+# === Файли ===
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
 
+# === Логування ===
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
+# === Завантаження моделей ===
 def load_user_models():
     if os.path.exists(MODEL_FILE):
         with open(MODEL_FILE, 'r') as f:
@@ -47,14 +48,14 @@ def save_user_models(data):
 
 user_models = load_user_models()
 
-def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_prediction):
+def log_prediction(user_id, model_type, mse, predictions, elapsed_time, last_prediction):
     df_log = pd.DataFrame([{
         "timestamp": datetime.datetime.now().isoformat(),
         "user_id": user_id,
         "model_type": model_type,
         "mse": round(mse, 4),
         "prediction_preview": list(np.round(predictions[:4], 2)),
-        "prediction_sum": round(total_prediction, 4),
+        "last_prediction": round(last_prediction, 4),
         "elapsed_time": round(elapsed_time, 2)
     }])
     if os.path.exists(LOG_FILE):
@@ -84,40 +85,12 @@ def load_crypto_data():
     df['Target'] = df['Price'].shift(-1)
     return df.dropna()
 
-def create_sequences(X, y, seq_length):
-    X_seq, y_seq = [], []
-    for i in range(len(X) - seq_length):
-        X_seq.append(X[i:i+seq_length])
-        y_seq.append(y[i+seq_length])
-    return np.array(X_seq), np.array(y_seq)
-
 def train_model(df, model_type='LinearRegression'):
     features = ['Price', 'Moving_Avg_10', 'Moving_Avg_50', 'Volatility', 'RSI']
-    X = df[features].values
-    y = df['Target'].values
+    X = df[features]
+    y = df['Target']
 
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    if model_type == 'LSTM':
-        seq_length = 10
-        X_seq, y_seq = create_sequences(X_scaled, y, seq_length)
-        split = int(0.8 * len(X_seq))
-        X_train, X_test = X_seq[:split], X_seq[split:]
-        y_train, y_test = y_seq[:split], y_seq[split:]
-
-        model = Sequential()
-        model.add(LSTM(64, input_shape=(X_train.shape[1], X_train.shape[2])))
-        model.add(Dense(1))
-        model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
-
-        model.fit(X_train, y_train, epochs=20, batch_size=16, verbose=0)
-        predictions = model.predict(X_test).flatten()
-        mse = mean_squared_error(y_test, predictions)
-
-        df_test = df.iloc[-len(y_test):].copy()
-        return model, df_test, y_test, predictions, mse
-
     X_scaled = scaler.fit_transform(X)
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, shuffle=False, test_size=0.2)
 
@@ -133,8 +106,7 @@ def train_model(df, model_type='LinearRegression'):
     predictions = model.predict(X_test)
     mse = mean_squared_error(y_test, predictions)
 
-    df_test = df.iloc[-len(y_test):].copy()
-    return model, df_test, y_test, predictions, mse
+    return model, df.loc[y_test.index], y_test, predictions, mse
 
 def plot_prediction(df_test, y_test, predictions):
     plt.figure(figsize=(10, 5))
@@ -157,26 +129,27 @@ def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymo
     model, df_test, y_test, predictions, mse = train_model(df, model_type)
     plot_buf = plot_prediction(df_test, y_test, predictions)
     elapsed_time = time.time() - start_time
-    total_prediction = np.sum(predictions)
-    log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_prediction)
+    last_prediction = predictions[-1]
+    log_prediction(user_id, model_type, mse, predictions, elapsed_time, last_prediction)
 
-    total_prediction = total_prediction / 10
-    total_prediction_formatted = "{:.3f}".format(total_prediction)
+    prediction_formatted = "{:.2f}".format(last_prediction)
 
     text = (
         f"Модель: {model_type}\n"
         f"Mean Squared Error: {mse:.2f}\n"
-        f"Сума прогнозу: {total_prediction_formatted}\n"
+        f"Останнє передбачене значення: {prediction_formatted} USD\n"
         f"Час прогнозування: {elapsed_time:.2f} сек."
     )
     return text, plot_buf
+
+# === Telegram команди ===
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я трейдинг-прогнозатор бот.\n"
         "Команди:\n"
         "/predict — отримати прогноз\n"
-        "/model [LinearRegression|SVR|RandomForest|LSTM] — обрати модель\n"
+        "/model [LinearRegression|SVR|RandomForest] — обрати модель\n"
         "/log — останні 5 прогнозів"
     )
 
@@ -196,12 +169,12 @@ async def set_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if context.args:
         model = context.args[0]
-        if model in ['LinearRegression', 'SVR', 'RandomForest', 'LSTM']:
+        if model in ['LinearRegression', 'SVR', 'RandomForest']:
             user_models[user_id] = model
             save_user_models(user_models)
             await update.message.reply_text(f"Модель встановлено: {model}")
         else:
-            await update.message.reply_text("Доступні моделі: LinearRegression, SVR, RandomForest, LSTM")
+            await update.message.reply_text("Доступні моделі: LinearRegression, SVR, RandomForest")
     else:
         await update.message.reply_text("Використання: /model LinearRegression")
 
@@ -220,11 +193,13 @@ async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_text += (
             f"- {row['timestamp'][:19]}\n"
             f"  Модель: {row['model_type']}, MSE: {row['mse']}, "
-            f"Сума: {row.get('prediction_sum', 'N/A')}, "
+            f"Прогноз: {row.get('last_prediction', 'N/A')} USD, "
             f"Час: {row.get('elapsed_time', 'N/A')} сек, "
-            f"Прогноз: {row['prediction_preview']}\n"
+            f"Перші значення: {row['prediction_preview']}\n"
         )
     await update.message.reply_text(log_text)
+
+# === Головна функція ===
 
 def run_bot_and_server():
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
