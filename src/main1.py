@@ -1,142 +1,113 @@
 import os
 import time
-import io
-import datetime
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+from io import BytesIO
 import requests
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.svm import SVR
-from sklearn.preprocessing import StandardScaler
-from sklearn.compose import TransformedTargetRegressor
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import telebot
+from keras.models import Sequential
+from keras.layers import LSTM, Dense, Dropout
+from sklearn.preprocessing import MinMaxScaler
+from datetime import datetime
 
-# Збір даних з CoinGecko
-COINGECKO_API_URL = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+TOKEN = os.environ.get('BOT_TOKEN')
+bot = telebot.TeleBot(TOKEN)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привіт! Я бот для прогнозування цін на криптовалюту. Напиши /predict для отримання прогнозу.")
-
+# Завантаження даних
 def load_crypto_data():
-    params = {
-        'vs_currency': 'usd',
-        'days': '100',
-        'interval': 'daily'
-    }
-    response = requests.get(COINGECKO_API_URL, params=params)
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=30"
+    response = requests.get(url)
     data = response.json()
-    prices = data['prices']
-    df = pd.DataFrame(prices, columns=['timestamp', 'Price'])
-    df['Date'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df['Price'] = df['Price'].astype(float)
-    df = df.drop(columns=['timestamp'])
-    df['Moving_Avg_10'] = df['Price'].rolling(window=10).mean()
-    df['Moving_Avg_50'] = df['Price'].rolling(window=50).mean()
-    df['Volatility'] = df['Price'].rolling(window=10).std()
-    delta = df['Price'].diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    avg_gain = pd.Series(gain).rolling(window=14).mean()
-    avg_loss = pd.Series(loss).rolling(window=14).mean()
-    rs = avg_gain / avg_loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    df['Target'] = df['Price'].shift(-1)
-    return df
+    try:
+        prices = np.array([item[1] for item in data['prices']])
+        timestamps = [datetime.fromtimestamp(item[0] / 1000.0) for item in data['prices']]
+        return prices.reshape(-1, 1), timestamps
+    except KeyError as e:
+        raise ValueError(f"Неможливо обробити дані: {e}")
 
-def train_model_full(df, model_type='LinearRegression'):
-    features = ['Price', 'Moving_Avg_10', 'Moving_Avg_50', 'Volatility', 'RSI']
-    df = df.dropna()
-    X = df[features]
-    y = df['Target']
+# Підготовка даних для LSTM
+def prepare_data(data, seq_length=10):
+    X, y = [], []
+    for i in range(len(data) - seq_length):
+        X.append(data[i:i+seq_length])
+        y.append(data[i+seq_length])
+    return np.array(X), np.array(y)
 
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+# Побудова LSTM моделі
+def create_lstm_model(input_shape):
+    model = Sequential()
+    model.add(LSTM(50, return_sequences=True, input_shape=input_shape))
+    model.add(Dropout(0.2))
+    model.add(LSTM(50))
+    model.add(Dropout(0.2))
+    model.add(Dense(1))
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    return model
 
-    if model_type == 'SVR':
-        base_model = SVR()
-    elif model_type == 'RandomForest':
-        base_model = RandomForestRegressor(n_estimators=100)
-    else:
-        base_model = LinearRegression()
+# Прогноз та побудова графіка
+def get_prediction_text_and_plot(user_id):
+    prices, timestamps = load_crypto_data()
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_prices = scaler.fit_transform(prices)
 
-    model = TransformedTargetRegressor(regressor=base_model, transformer=StandardScaler())
-    model.fit(X_scaled, y)
-    return model, scaler, df
+    X, y = prepare_data(scaled_prices)
+    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
 
-def forecast_future_prices(model, df, scaler, days_ahead=5):
-    features = ['Price', 'Moving_Avg_10', 'Moving_Avg_50', 'Volatility', 'RSI']
-    latest_data = df[features].iloc[-1:].copy()
+    model = create_lstm_model((X.shape[1], 1))
+    model.fit(X, y, epochs=20, batch_size=32, verbose=0)
 
-    predictions = []
-    current_date = df['Date'].iloc[-1]
+    # Прогноз
+    last_sequence = scaled_prices[-10:]
+    last_sequence = np.reshape(last_sequence, (1, 10, 1))
+    prediction = model.predict(last_sequence)[0][0]
+    predicted_price = scaler.inverse_transform([[prediction]])[0][0]
 
-    for _ in range(days_ahead):
-        x_input = scaler.transform(latest_data)
-        next_price = model.predict(x_input)[0]
-        predictions.append((current_date + datetime.timedelta(days=1), next_price))
+    # Побудова графіка
+    predicted_prices = model.predict(X)
+    predicted_prices = scaler.inverse_transform(predicted_prices)
+    real_prices = scaler.inverse_transform(y.reshape(-1, 1))
 
-        new_row = {
-            'Price': next_price,
-            'Moving_Avg_10': latest_data['Moving_Avg_10'].values[0],
-            'Moving_Avg_50': latest_data['Moving_Avg_50'].values[0],
-            'Volatility': latest_data['Volatility'].values[0],
-            'RSI': latest_data['RSI'].values[0],
-        }
-        latest_data = pd.DataFrame([new_row])
-        current_date += datetime.timedelta(days=1)
-
-    return predictions
-
-def plot_future_predictions(predictions):
-    dates = [d for d, _ in predictions]
-    values = [p for _, p in predictions]
+    plot_buf = BytesIO()
     plt.figure(figsize=(10, 5))
-    plt.plot(dates, values, marker='o', label="Forecast")
-    plt.title("Forecasted Crypto Prices")
-    plt.xlabel("Date")
-    plt.ylabel("Price")
-    plt.xticks(rotation=45)
+    plt.plot(timestamps[-len(real_prices):], real_prices, label='Real')
+    plt.plot(timestamps[-len(predicted_prices):], predicted_prices, label='Predicted')
+    plt.title('Crypto Price Prediction')
+    plt.xlabel('Date')
+    plt.ylabel('Price')
     plt.legend()
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
+    plt.tight_layout()
+    plt.savefig(plot_buf, format='png')
     plt.close()
-    return buf
-
-def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymous'):
-    start_time = time.time()
-    df = load_crypto_data()
-    model, scaler, df = train_model_full(df, model_type)
-    future_predictions = forecast_future_prices(model, df, scaler, days_ahead=5)
-    plot_buf = plot_future_predictions(future_predictions)
-    elapsed_time = time.time() - start_time
-    total_prediction = sum([p for _, p in future_predictions])
+    plot_buf.seek(0)
 
     text = (
-        f"Модель: {model_type}\n"
-        f"Сума прогнозу на 5 днів: {total_prediction:.2f}\n"
-        f"Час прогнозування: {elapsed_time:.2f} сек.\n"
-        f"Наступна ціна: {future_predictions[0][1]:.2f}"
+        f"Модель: LSTM\n"
+        f"Останнє передбачене значення: {predicted_price:.2f} USD\n"
+        f"Дата: {timestamps[-1].strftime('%Y-%m-%d %H:%M:%S')}"
     )
     return text, plot_buf
 
-async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    model_type = 'LinearRegression'
-    user_id = update.effective_user.id
-    try:
-        text, plot_buf = get_prediction_text_and_plot(model_type=model_type, user_id=user_id)
-        await update.message.reply_text(f"Прогноз за моделлю: {model_type}...")
-        await update.message.reply_text(text)
-        await update.message.reply_photo(photo=plot_buf)
-    except Exception as e:
-        await update.message.reply_text(f"Помилка: {str(e)}")
+# Обробка команди /start
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, "Привіт! Я бот для прогнозування ціни BTC. Введи /predict, щоб отримати прогноз.")
 
+# Обробка команди /predict
+@bot.message_handler(commands=['predict'])
+def predict(message):
+    try:
+        start_time = time.time()
+        text, plot = get_prediction_text_and_plot(message.chat.id)
+        end_time = time.time()
+        duration = end_time - start_time
+
+        text += f"\nЧас прогнозування: {duration:.2f} сек."
+        bot.send_message(message.chat.id, text)
+        bot.send_photo(message.chat.id, photo=plot)
+    except Exception as e:
+        bot.send_message(message.chat.id, f"Помилка: {e}")
+
+# Запуск
 if __name__ == '__main__':
-    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    application = ApplicationBuilder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("predict", predict))
-    application.run_polling()
+    bot.polling(none_stop=True)
