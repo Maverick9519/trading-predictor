@@ -4,8 +4,7 @@ matplotlib
 scikit-learn
 keras
 tensorflow
-python-telegram-bot==20.3
+python-telegram-bot==20.7
 python-binance
 flask
 requests
-gunicorn
