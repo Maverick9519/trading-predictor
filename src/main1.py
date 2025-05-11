@@ -1,4 +1,4 @@
-# telegram_crypto_lstm_bot.py
+# telegram_crypto_lstm_bot_binance.py
 
 import pandas as pd
 import numpy as np
@@ -8,29 +8,32 @@ from keras.models import Sequential
 from keras.layers import LSTM, Dense, Dropout
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from binance.client import Client
 import logging
 import io
-import requests
 import datetime
-import time
 import os
 
 # === Telegram Token ===
 TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
 
+# === Binance API keys (public use - not required for historical data) ===
+BINANCE_CLIENT = Client()
+
 # === Logging ===
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# === Load live data from CoinGecko ===
+# === Load live data from Binance ===
 def load_crypto_data():
-    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=30"
-    response = requests.get(url)
-    data = response.json()
-
-    prices = [x[1] for x in data['prices']]
-    timestamps = [datetime.datetime.fromtimestamp(x[0] / 1000) for x in data['prices']]
-    df = pd.DataFrame({"Date": timestamps, "Price": prices})
-    return df
+    klines = BINANCE_CLIENT.get_klines(symbol='BTCUSDT', interval=Client.KLINE_INTERVAL_1HOUR, limit=500)
+    data = pd.DataFrame(klines, columns=[
+        'Open time', 'Open', 'High', 'Low', 'Close', 'Volume',
+        'Close time', 'Quote asset volume', 'Number of trades',
+        'Taker buy base asset volume', 'Taker buy quote asset volume', 'Ignore'
+    ])
+    data['Date'] = pd.to_datetime(data['Close time'], unit='ms')
+    data['Price'] = data['Close'].astype(float)
+    return data[['Date', 'Price']]
 
 # === LSTM prediction ===
 def create_dataset(series, look_back=10):
@@ -65,7 +68,7 @@ def predict_lstm(df):
 def plot_latest_data(df):
     plt.figure(figsize=(10, 4))
     plt.plot(df['Date'], df['Price'], label='Real Price')
-    plt.title('Bitcoin Price - Last 30 Days')
+    plt.title('Bitcoin Price - Last 500 Hours')
     plt.xlabel('Date')
     plt.ylabel('Price (USD)')
     plt.xticks(rotation=45)
@@ -79,12 +82,12 @@ def plot_latest_data(df):
 # === Telegram bot handlers ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привіт! Я бот прогнозування ціни BTC на основі LSTM.\n"
+        "Привіт! Я бот прогнозування ціни BTC на основі LSTM з даними з Binance.\n"
         "/predict — отримати прогноз."
     )
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Отримання даних та прогнозування...")
+    await update.message.reply_text("Отримання даних з Binance та прогнозування...")
     try:
         df = load_crypto_data()
         predicted_price = predict_lstm(df)
