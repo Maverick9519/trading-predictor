@@ -1,5 +1,3 @@
-# telegram_crypto_lstm_bot_binance.py
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,17 +14,25 @@ import os
 import time
 import threading
 import requests
+from flask import Flask
 
 # === Telegram Token ===
-TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "your-telegram-token")  # Заміни на змінну середовища або встав значення напряму
 
 # === Binance API client ===
 BINANCE_CLIENT = Client()
 
+# === Flask сервер для Render і UptimeRobot ===
+app_web = Flask(__name__)
+
+@app_web.route("/")
+def home():
+    return "✅ Bot is alive"
+
 # === Logging ===
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# === Keep Render alive by pinging itself ===
+# === Keep alive ping ===
 def keep_alive():
     def ping():
         while True:
@@ -98,7 +104,7 @@ def plot_latest_data(df):
 # === Telegram bot handlers ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привіт! Я бот прогнозування ціни BTC на основі LSTM з даними з Binance.\n"
+        "Привіт! Я бот прогнозування ціни BTC на основі LSTM з Binance.\n"
         "/predict — отримати прогноз."
     )
 
@@ -123,13 +129,14 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("Prediction error")
         await update.message.reply_text(f"Помилка: {e}")
 
-# === Main ===
+# === Main bot runner ===
 def run_bot():
-    keep_alive()  # запускаємо автопінг
+    keep_alive()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
-    app.run_polling()
+    threading.Thread(target=app.run_polling, daemon=True).start()
 
 if __name__ == '__main__':
     run_bot()
+    app_web.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
