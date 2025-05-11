@@ -2,8 +2,10 @@ pandas
 numpy
 matplotlib
 scikit-learn
+keras
 tensorflow
 python-telegram-bot==20.3
 python-binance
-Flask
+flask
 requests
+gunicorn
