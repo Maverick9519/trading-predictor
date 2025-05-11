@@ -13,10 +13,10 @@ import time
 import threading
 import requests
 from flask import Flask
-import os
+import asyncio
 
 # === Telegram Token ===
-TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
+TELEGRAM_TOKEN = 'ТВОЙ_ТОКЕН_ТУТ'
 
 # === Binance API client ===
 BINANCE_CLIENT = Client()
@@ -24,7 +24,7 @@ BINANCE_CLIENT = Client()
 # === Logging ===
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# === Flask Server ===
+# === Flask Server (для Render ping) ===
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
@@ -127,20 +127,17 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("Prediction error")
         await update.message.reply_text(f"Помилка: {e}")
 
-# === Telegram bot у фоні ===
-def run_bot():
+# === Start both Telegram Bot and Flask Server ===
+def start_bot():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
-    app.run_polling()
+    asyncio.run(app.run_polling())
 
-# === Головна функція ===
-if __name__ == '__main__':
+def run_all():
+    threading.Thread(target=start_bot, daemon=True).start()
     keep_alive()
+    flask_app.run(host="0.0.0.0", port=10000)
 
-    # Telegram bot запускається у фоновому потоці
-    threading.Thread(target=run_bot, daemon=True).start()
-
-    # Flask сервер як головний процес
-    port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host='0.0.0.0', port=port)
+if __name__ == '__main__':
+    run_all()
