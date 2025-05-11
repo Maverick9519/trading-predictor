@@ -14,7 +14,6 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
-from flask import Flask
 import logging
 import io
 import json
@@ -22,7 +21,6 @@ import os
 import datetime
 import time
 import requests
-import threading
 
 # === Telegram Token ===
 TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
@@ -36,13 +34,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-
-# === Flask app ===
-flask_app = Flask(__name__)
-
-@flask_app.route('/')
-def index():
-    return 'Bot and Web App are running!'
 
 # === Завантаження моделей ===
 def load_user_models():
@@ -211,11 +202,7 @@ async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Головна функція ===
 
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=10000)
-
 def run_bot_and_server():
-    threading.Thread(target=run_flask).start()
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("predict", predict))
