@@ -5,7 +5,7 @@ from sklearn.preprocessing import MinMaxScaler
 from keras.models import Sequential
 from keras.layers import LSTM, Dense, Dropout
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 from binance.client import Client
 import logging
 import io
@@ -14,24 +14,24 @@ import threading
 import requests
 from flask import Flask
 import asyncio
+import os
 
 # === Telegram Token ===
-TELEGRAM_TOKEN = 'ТВОЙ_ТОКЕН_ТУТ'
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'ТВОЙ_ТОКЕН_ТУТ')
 
 # === Binance API client ===
 BINANCE_CLIENT = Client()
 
 # === Logging ===
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
 
-# === Flask Server (для Render ping) ===
+# === Flask Server ===
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def home():
     return "✅ Бот працює", 200
 
-# === Keep Render alive by pinging itself ===
 def keep_alive():
     def ping():
         while True:
@@ -43,7 +43,7 @@ def keep_alive():
             time.sleep(300)
     threading.Thread(target=ping, daemon=True).start()
 
-# === Load live data from Binance ===
+# === Load data ===
 def load_crypto_data():
     klines = BINANCE_CLIENT.get_klines(symbol='BTCUSDT', interval=Client.KLINE_INTERVAL_1HOUR, limit=500)
     data = pd.DataFrame(klines, columns=[
@@ -55,7 +55,6 @@ def load_crypto_data():
     data['Price'] = data['Close'].astype(float)
     return data[['Date', 'Price']]
 
-# === LSTM prediction ===
 def create_dataset(series, look_back=10):
     X, y = [], []
     for i in range(len(series) - look_back):
@@ -70,12 +69,13 @@ def predict_lstm(df):
     X, y = create_dataset(scaled, look_back)
     X = np.reshape(X, (X.shape[0], X.shape[1], 1))
 
-    model = Sequential()
-    model.add(LSTM(50, return_sequences=True, input_shape=(look_back, 1)))
-    model.add(Dropout(0.2))
-    model.add(LSTM(50))
-    model.add(Dropout(0.2))
-    model.add(Dense(1))
+    model = Sequential([
+        LSTM(50, return_sequences=True, input_shape=(look_back, 1)),
+        Dropout(0.2),
+        LSTM(50),
+        Dropout(0.2),
+        Dense(1)
+    ])
     model.compile(optimizer='adam', loss='mean_squared_error')
     model.fit(X, y, epochs=5, batch_size=16, verbose=0)
 
@@ -84,7 +84,6 @@ def predict_lstm(df):
     predicted_price = scaler.inverse_transform([[prediction]])[0][0]
     return predicted_price
 
-# === Plot function ===
 def plot_latest_data(df):
     plt.figure(figsize=(10, 4))
     plt.plot(df['Date'], df['Price'], label='Real Price')
@@ -99,12 +98,9 @@ def plot_latest_data(df):
     plt.close()
     return buf
 
-# === Telegram bot handlers ===
+# === Telegram Bot Handlers ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Привіт! Я бот прогнозування ціни BTC на основі LSTM з даними з Binance.\n"
-        "/predict — отримати прогноз."
-    )
+    await update.message.reply_text("Привіт! Я бот прогнозування ціни BTC на основі LSTM з Binance.\n/predict — отримати прогноз.")
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Отримання даних з Binance та прогнозування...")
@@ -118,7 +114,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plot_buf = plot_latest_data(df)
         text = (
             f"Поточна ціна: ${now_price:.2f}\n"
-            f"Прогноз через 1 крок: ${predicted_price:.2f}\n"
+            f"Прогноз: ${predicted_price:.2f}\n"
             f"Зміна: ${change:.2f} ({change_pct:.2f}%)"
         )
         await update.message.reply_text(text)
@@ -127,17 +123,19 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("Prediction error")
         await update.message.reply_text(f"Помилка: {e}")
 
-# === Start both Telegram Bot and Flask Server ===
-def start_bot():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+async def run_bot():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
-    asyncio.run(app.run_polling())
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await app.updater.idle()
 
-def run_all():
-    threading.Thread(target=start_bot, daemon=True).start()
+def start_all():
     keep_alive()
-    flask_app.run(host="0.0.0.0", port=10000)
+    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))), daemon=True).start()
+    asyncio.run(run_bot())
 
 if __name__ == '__main__':
-    run_all()
+    start_all()
