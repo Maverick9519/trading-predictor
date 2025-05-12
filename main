@@ -17,7 +17,7 @@ import asyncio
 import os
 
 # === Telegram Token ===
-TELEGRAM_TOKEN = os.getenv('7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 
 # === Binance API client ===
 BINANCE_CLIENT = Client()
