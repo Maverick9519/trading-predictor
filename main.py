@@ -32,6 +32,7 @@ flask_app = Flask(__name__)
 def home():
     return "✅ Бот працює", 200
 
+# === Self-ping (для Render) ===
 def keep_alive():
     def ping():
         while True:
@@ -43,7 +44,7 @@ def keep_alive():
             time.sleep(300)
     threading.Thread(target=ping, daemon=True).start()
 
-# === Load data ===
+# === Load data from Binance ===
 def load_crypto_data():
     klines = BINANCE_CLIENT.get_klines(symbol='BTCUSDT', interval=Client.KLINE_INTERVAL_1HOUR, limit=500)
     data = pd.DataFrame(klines, columns=[
@@ -55,6 +56,7 @@ def load_crypto_data():
     data['Price'] = data['Close'].astype(float)
     return data[['Date', 'Price']]
 
+# === Prepare dataset for LSTM ===
 def create_dataset(series, look_back=10):
     X, y = [], []
     for i in range(len(series) - look_back):
@@ -62,6 +64,7 @@ def create_dataset(series, look_back=10):
         y.append(series[i + look_back])
     return np.array(X), np.array(y)
 
+# === LSTM prediction ===
 def predict_lstm(df):
     scaler = MinMaxScaler()
     scaled = scaler.fit_transform(df[['Price']].values)
@@ -84,6 +87,7 @@ def predict_lstm(df):
     predicted_price = scaler.inverse_transform([[prediction]])[0][0]
     return predicted_price
 
+# === Plot BTC data ===
 def plot_latest_data(df):
     plt.figure(figsize=(10, 4))
     plt.plot(df['Date'], df['Price'], label='Real Price')
@@ -123,6 +127,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("Prediction error")
         await update.message.reply_text(f"Помилка: {e}")
 
+# === Запуск Telegram-бота ===
 async def run_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -132,9 +137,13 @@ async def run_bot():
     await app.updater.start_polling()
     await app.updater.idle()
 
+# === Основний запуск ===
 def start_all():
     keep_alive()
+    # Запускаємо Telegram-бота у фоновому потоці
     threading.Thread(target=lambda: asyncio.run(run_bot()), daemon=True).start()
+
+    # Flask запускається у головному потоці (Render вимагає цього)
     flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 if __name__ == '__main__':
