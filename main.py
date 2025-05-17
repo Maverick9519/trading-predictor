@@ -134,8 +134,8 @@ async def run_bot():
 
 def start_all():
     keep_alive()
-    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))), daemon=True).start()
-    asyncio.run(run_bot())
+    threading.Thread(target=lambda: asyncio.run(run_bot()), daemon=True).start()
+    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 if __name__ == '__main__':
     start_all()
