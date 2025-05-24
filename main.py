@@ -102,9 +102,18 @@ def plot_latest_data(df):
     plt.close()
     return buf
 
+# === Алгоритм: A = sum(x^k + y + a) ===
+def custom_algorithm(x_val, y_val, a_val, n_val):
+    if x_val == 1:
+        geometric_sum = n_val
+    else:
+        geometric_sum = (x_val - x_val ** (n_val + 1)) / (1 - x_val)
+    result = n_val * (a_val + y_val) + geometric_sum
+    return result
+
 # === Telegram Bot Handlers ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привіт! Я бот прогнозування ціни BTC на основі LSTM з Binance.\n/predict — отримати прогноз.")
+    await update.message.reply_text("Привіт! Я бот прогнозування ціни BTC на основі LSTM з Binance.\n/predict — отримати прогноз.\n/custom x y a n — обчислити власний алгоритм.")
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Отримання даних з Binance та прогнозування...")
@@ -127,11 +136,24 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("Prediction error")
         await update.message.reply_text(f"Помилка: {e}")
 
+async def custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if len(context.args) != 4:
+            await update.message.reply_text("❗️ Введи 4 аргументи: /custom x y a n")
+            return
+        x, y, a = float(context.args[0]), float(context.args[1]), float(context.args[2])
+        n = int(context.args[3])
+        result = custom_algorithm(x, y, a, n)
+        await update.message.reply_text(f"🔢 Результат A = {result:.4f}")
+    except Exception as e:
+        await update.message.reply_text(f"Помилка: {e}")
+
 # === Запуск Telegram-бота ===
 async def run_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
+    app.add_handler(CommandHandler("custom", custom))
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
@@ -140,10 +162,7 @@ async def run_bot():
 # === Основний запуск ===
 def start_all():
     keep_alive()
-    # Запускаємо Telegram-бота у фоновому потоці
     threading.Thread(target=lambda: asyncio.run(run_bot()), daemon=True).start()
-
-    # Flask запускається у головному потоці (Render вимагає цього)
     flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 if __name__ == '__main__':
