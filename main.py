@@ -14,10 +14,9 @@ import threading
 import requests
 from flask import Flask
 import asyncio
-import os
 
-# === Telegram Token ===
-TELEGRAM_TOKEN = os.getenv('7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y')
+# === ВСТАВ СВІЙ ТЕЛЕГРАМ ТОКЕН СЮДИ ===
+TELEGRAM_TOKEN = "встав_тут_свій_токен"
 
 # === Binance API client ===
 BINANCE_CLIENT = Client()
