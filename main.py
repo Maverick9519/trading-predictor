@@ -10,6 +10,10 @@ from io import BytesIO
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from dotenv import load_dotenv
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY")
 
 # --- Мінімізуємо логування TensorFlow (на всяк випадок)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
