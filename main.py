@@ -2,14 +2,14 @@ import os
 import threading
 import logging
 import asyncio
-from flask import Flask
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-
+import requests
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from io import BytesIO
+from flask import Flask
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Для Render: прибрати зайві TensorFlow логування
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -21,34 +21,55 @@ def custom_algorithm(x: float, y: float, a: float, n: int) -> float:
         result += (x**i + y) + a
     return result
 
-# === Прогнозування (простий приклад для демонстрації) ===
+# === Отримання актуальної інформації про Bitcoin з CoinGecko ===
+def fetch_latest_data():
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+    params = {"vs_currency": "usd", "days": "30", "interval": "daily"}
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    if "prices" not in data:
+        raise KeyError("❌ Дані не містять ключа 'prices'")
+    
+    prices = data["prices"]
+    df = pd.DataFrame(prices, columns=["timestamp", "price"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df.set_index("timestamp", inplace=True)
+    return df
+
+# === Побудова графіку ===
 def plot_latest_data(df):
     fig, ax = plt.subplots()
-    df.tail(30).plot(ax=ax)
+    df.tail(30).plot(ax=ax, legend=False)
+    plt.title("Bitcoin (30 днів)")
+    plt.xlabel("Дата")
+    plt.ylabel("Ціна (USD)")
+    plt.tight_layout()
     buf = BytesIO()
     plt.savefig(buf, format='png')
     buf.seek(0)
     return buf
 
+# === Команди Telegram ===
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        now_price = 123.45  # тестове значення
-        predicted_price = 130.00
+        df = fetch_latest_data()
+        now_price = df["price"].iloc[-1]
+        predicted_price = now_price * 1.05  # Проста модель: +5%
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
-        df = pd.DataFrame({'Price': np.random.rand(100)})
-
         plot_buf = plot_latest_data(df)
+
         text = (
-            f"Поточна ціна: ${now_price:.2f}\n"
-            f"Прогноз: ${predicted_price:.2f}\n"
-            f"Зміна: ${change:.2f} ({change_pct:.2f}%)"
+            f"📊 Поточна ціна: ${now_price:.2f}\n"
+            f"🔮 Прогноз: ${predicted_price:.2f}\n"
+            f"📈 Зміна: ${change:.2f} ({change_pct:.2f}%)"
         )
         await update.message.reply_text(text)
         await update.message.reply_photo(photo=plot_buf)
     except Exception as e:
-        logging.exception("Prediction error")
-        await update.message.reply_text(f"Помилка: {e}")
+        logging.exception("❗️Помилка прогнозу")
+        await update.message.reply_text(f"❌ Помилка: {e}")
 
 async def custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -60,21 +81,21 @@ async def custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = custom_algorithm(x, y, a, n)
         await update.message.reply_text(f"🔢 Результат A = {result:.4f}")
     except Exception as e:
-        await update.message.reply_text(f"Помилка: {e}")
+        await update.message.reply_text(f"❌ Помилка: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привіт! Надішли /custom x y a n для обчислення або /predict для прогнозу.")
 
-# === Flask для Render Keep-Alive ===
+# === Flask для keep-alive на Render ===
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def index():
-    return "Бот працює!"
+    return "✅ Бот працює!"
 
 def keep_alive():
     threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=10000)).start()
 
-# === Telegram Bot Start ===
+# === Telegram Bot запуск ===
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 async def run_bot():
