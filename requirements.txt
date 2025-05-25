@@ -1,10 +1,8 @@
-pandas
+tensorflow-cpu==2.15.0
 numpy
+pandas
 matplotlib
 scikit-learn
-keras
-tensorflow
-python-telegram-bot==20.7
-python-binance
+python-telegram-bot==20.0
 flask
-requests
+aiohttp
