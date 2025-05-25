@@ -11,40 +11,42 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# --- Прибрати зайві логи TensorFlow (на майбутнє)
+# --- Прибрати зайві логи TensorFlow
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-# --- Включаємо логування
 logging.basicConfig(level=logging.INFO)
 
-# === Алгоритм з фото ===
+# === Алгоритм з фото: A = ((x^n + y) + a) + ((x^{n-1} + y) + a) + ... + ((x^1 + y) + a)
 def custom_algorithm(x: float, y: float, a: float, n: int) -> float:
-    result = 0
-    for i in range(1, n + 1):
-        result += (x**i + y) + a
-    return result
+    return sum((x**i + y + a) for i in range(n, 0, -1))
 
-# === Отримання даних про Bitcoin ===
+# === API запит до CoinMarketCap
 def fetch_latest_data():
-    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
-    params = {"vs_currency": "usd", "days": "30", "interval": "daily"}
-    response = requests.get(url, params=params)
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+    headers = {
+        "Accepts": "application/json",
+        "X-CMC_PRO_API_KEY": os.environ.get("COINMARKETCAP_API_KEY")
+    }
+    params = {
+        "symbol": "BTC",
+        "convert": "USD"
+    }
+    response = requests.get(url, headers=headers, params=params)
     data = response.json()
 
-    if "prices" not in data:
-        raise KeyError("❌ Дані не містять ключа 'prices'")
-    
-    prices = data["prices"]
-    df = pd.DataFrame(prices, columns=["timestamp", "price"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-    df.set_index("timestamp", inplace=True)
-    return df
+    try:
+        price = data["data"]["BTC"]["quote"]["USD"]["price"]
+        timestamp = pd.Timestamp.now()
+        df = pd.DataFrame([[timestamp, price]], columns=["timestamp", "price"])
+        df.set_index("timestamp", inplace=True)
+        return df
+    except Exception as e:
+        raise RuntimeError("❌ Помилка обробки відповіді від CoinMarketCap") from e
 
-# === Побудова графіку ===
+# === Побудова графіка (поки просто один запис, як заглушка)
 def plot_latest_data(df):
     fig, ax = plt.subplots()
-    df.tail(30).plot(ax=ax, legend=False)
-    plt.title("Bitcoin (30 днів)")
+    df.plot(ax=ax, legend=False)
+    plt.title("Bitcoin (поточна ціна)")
     plt.xlabel("Дата")
     plt.ylabel("Ціна (USD)")
     plt.tight_layout()
