@@ -99,20 +99,21 @@ def index():
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 async def run_bot():
+    if not TELEGRAM_TOKEN:
+        raise ValueError("❌ TELEGRAM_TOKEN не заданий у змінних середовища!")
+
     logging.info("🚀 Запуск Telegram бота")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
     app.add_handler(CommandHandler("custom", custom))
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    await app.updater.idle()
+    await app.run_polling()
 
 # === Головний запуск: Flask + Telegram ===
 if __name__ == '__main__':
     # Flask запускається в окремому потоці
-    threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=10000), daemon=True).start()
+    port = int(os.environ.get("PORT", 4000))
+    threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=port), daemon=True).start()
 
     # Telegram бот запускається в головному потоці
     asyncio.run(run_bot())
