@@ -112,7 +112,7 @@ async def run_bot():
 # === Головний запуск: Flask + Telegram ===
 if __name__ == '__main__':
     # Flask запускається в окремому потоці
-    threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=4000), daemon=True).start()
+    threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=10000), daemon=True).start()
 
     # Telegram бот запускається в головному потоці
     asyncio.run(run_bot())
