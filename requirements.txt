@@ -3,6 +3,7 @@ numpy
 pandas
 matplotlib
 scikit-learn
-python-telegram-bot==20.0
+python-telegram-bot==20.7
 flask
 aiohttp
+requests
