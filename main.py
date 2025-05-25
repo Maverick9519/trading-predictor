@@ -11,19 +11,17 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# --- Мінімізуємо логування TensorFlow (на всяк випадок)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-# === Алгоритм з формули A = ((x^n + y) + a) + ((x^{n-1} + y) + a) + ...
+# === Формула
 def custom_algorithm(x: float, y: float, a: float, n: int) -> float:
     return sum((x**i + y + a) for i in range(n, 0, -1))
 
-# === Отримання останньої ціни BTC з CoinMarketCap
+# === Ціна BTC
 def fetch_latest_data():
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
     api_key = os.environ.get("COINMARKETCAP_API_KEY")
-
     if not api_key:
         raise RuntimeError("❌ Не вказано COINMARKETCAP_API_KEY у змінних середовища!")
 
@@ -31,35 +29,21 @@ def fetch_latest_data():
         "Accepts": "application/json",
         "X-CMC_PRO_API_KEY": api_key
     }
-
-    params = {
-        "symbol": "BTC",
-        "convert": "USD"
-    }
+    params = {"symbol": "BTC", "convert": "USD"}
 
     response = requests.get(url, headers=headers, params=params)
-
     try:
         response.raise_for_status()
         data = response.json()
-
-        if "data" not in data or "BTC" not in data["data"]:
-            raise ValueError(f"Відповідь API не містить даних BTC: {data}")
-
         price = data["data"]["BTC"]["quote"]["USD"]["price"]
         timestamp = pd.Timestamp.now()
         df = pd.DataFrame([[timestamp, price]], columns=["timestamp", "price"])
         df.set_index("timestamp", inplace=True)
         return df
-
-    except requests.exceptions.RequestException as req_err:
-        raise RuntimeError(f"❌ Проблема з HTTP-запитом: {req_err}")
-    except ValueError as val_err:
-        raise RuntimeError(f"❌ Невірна відповідь API: {val_err}")
     except Exception as e:
-        raise RuntimeError("❌ Помилка обробки відповіді від CoinMarketCap") from e
+        raise RuntimeError(f"❌ API помилка: {e}")
 
-# === Побудова графіка з DataFrame
+# === Побудова графіка
 def plot_latest_data(df):
     fig, ax = plt.subplots()
     df.plot(ax=ax, legend=False)
@@ -72,7 +56,7 @@ def plot_latest_data(df):
     buf.seek(0)
     return buf
 
-# === Telegram Команди
+# === Telegram-команди
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         df = fetch_latest_data()
@@ -81,7 +65,6 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
         plot_buf = plot_latest_data(df)
-
         text = (
             f"📊 Поточна ціна: ${now_price:.2f}\n"
             f"🔮 Прогноз: ${predicted_price:.2f}\n"
@@ -115,7 +98,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stop — зупинити авто-прогноз"
     )
 
-# === Автопрогнозування
+# === Авто-прогноз
 auto_tasks = {}
 
 async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
@@ -127,7 +110,6 @@ async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
         plot_buf = plot_latest_data(df)
-
         text = (
             f"📊 Поточна ціна: ${now_price:.2f}\n"
             f"🔮 Прогноз: ${predicted_price:.2f}\n"
@@ -143,14 +125,11 @@ async def auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(context.args) != 1:
             await update.message.reply_text("❗️ Формат: /auto 5 (хвилин)")
             return
-
         minutes = int(context.args[0])
         chat_id = update.effective_chat.id
-
         if chat_id in auto_tasks:
             auto_tasks[chat_id].schedule_removal()
-
-        job = context.job_queue.run_repeating(auto_predict, interval=minutes*60, first=0, chat_id=chat_id)
+        job = context.job_queue.run_repeating(auto_predict, interval=minutes * 60, first=0, chat_id=chat_id)
         auto_tasks[chat_id] = job
         await update.message.reply_text(f"✅ Авто-прогноз кожні {minutes} хвилин.")
     except Exception as e:
@@ -165,14 +144,14 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❗️ Авто-прогноз не запущено.")
 
-# === Flask для Render keep-alive
+# === Flask-сервер
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def index():
     return "✅ Бот працює!"
 
-# === Запуск Telegram бота
+# === Telegram бот
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 async def run_bot():
@@ -186,7 +165,6 @@ async def run_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-    # Не дозволяє зупинитись (важливо для Render worker)
     await asyncio.Event().wait()
 
 # === Головний запуск
