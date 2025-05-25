@@ -1,13 +1,7 @@
 services:
   - type: web
-    name: crypto-predictor-bot
+    name: telegram-crypto-bot
     env: python
-    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
-    envVars:
-      - key: TELEGRAM_TOKEN
-        value: <7632093001:AAGCtnh5lcq7O0UEJ0haBZZTcPQL_QW5Qf4>
-      - key: COINMARKETCAP_API_KEY
-        value: <121f7db7-edbd-4cec-9a7c-54c61c1d47cc>
-
+    autoDeploy: true
