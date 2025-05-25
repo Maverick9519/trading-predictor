@@ -11,8 +11,11 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Для Render: прибрати зайві TensorFlow логування
+# --- Прибрати зайві логи TensorFlow (на майбутнє)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+# --- Включаємо логування
+logging.basicConfig(level=logging.INFO)
 
 # === Алгоритм ===
 def custom_algorithm(x: float, y: float, a: float, n: int) -> float:
@@ -21,7 +24,7 @@ def custom_algorithm(x: float, y: float, a: float, n: int) -> float:
         result += (x**i + y) + a
     return result
 
-# === Отримання актуальної інформації про Bitcoin з CoinGecko ===
+# === Отримання даних про Bitcoin ===
 def fetch_latest_data():
     url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
     params = {"vs_currency": "usd", "days": "30", "interval": "daily"}
@@ -55,7 +58,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         df = fetch_latest_data()
         now_price = df["price"].iloc[-1]
-        predicted_price = now_price * 1.05  # Проста модель: +5%
+        predicted_price = now_price * 1.05  # +5% як проста модель
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
         plot_buf = plot_latest_data(df)
@@ -86,19 +89,17 @@ async def custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привіт! Надішли /custom x y a n для обчислення або /predict для прогнозу.")
 
-# === Flask для keep-alive на Render ===
+# === Flask для Render keep-alive ===
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def index():
     return "✅ Бот працює!"
 
-def keep_alive():
-    threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=10000)).start()
-
 # === Telegram Bot запуск ===
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 async def run_bot():
+    logging.info("🚀 Запуск Telegram бота")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
@@ -108,9 +109,10 @@ async def run_bot():
     await app.updater.start_polling()
     await app.updater.idle()
 
-def start_all():
-    keep_alive()
-    threading.Thread(target=lambda: asyncio.run(run_bot()), daemon=True).start()
+# === Головний запуск: Flask + Telegram ===
+if __name__ == '__main__':
+    # Flask запускається в окремому потоці
+    threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=10000), daemon=True).start()
 
-if name == '__main__':
-    start_all()
+    # Telegram бот запускається в головному потоці
+    asyncio.run(run_bot())
