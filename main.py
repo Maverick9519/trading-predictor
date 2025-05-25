@@ -11,38 +11,55 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# --- Прибрати зайві логи TensorFlow
+# --- Мінімізуємо логування TensorFlow (на всяк випадок)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-# === Алгоритм з фото: A = ((x^n + y) + a) + ((x^{n-1} + y) + a) + ... + ((x^1 + y) + a)
+# === Алгоритм з формули A = ((x^n + y) + a) + ((x^{n-1} + y) + a) + ...
 def custom_algorithm(x: float, y: float, a: float, n: int) -> float:
     return sum((x**i + y + a) for i in range(n, 0, -1))
 
-# === API запит до CoinMarketCap
+# === Отримання останньої ціни BTC з CoinMarketCap
 def fetch_latest_data():
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+    api_key = os.environ.get("COINMARKETCAP_API_KEY")
+
+    if not api_key:
+        raise RuntimeError("❌ Не вказано COINMARKETCAP_API_KEY у змінних середовища!")
+
     headers = {
         "Accepts": "application/json",
-        "X-CMC_PRO_API_KEY": os.environ.get("COINMARKETCAP_API_KEY")
+        "X-CMC_PRO_API_KEY": api_key
     }
+
     params = {
         "symbol": "BTC",
         "convert": "USD"
     }
+
     response = requests.get(url, headers=headers, params=params)
-    data = response.json()
 
     try:
+        response.raise_for_status()
+        data = response.json()
+
+        if "data" not in data or "BTC" not in data["data"]:
+            raise ValueError(f"Відповідь API не містить даних BTC: {data}")
+
         price = data["data"]["BTC"]["quote"]["USD"]["price"]
         timestamp = pd.Timestamp.now()
         df = pd.DataFrame([[timestamp, price]], columns=["timestamp", "price"])
         df.set_index("timestamp", inplace=True)
         return df
+
+    except requests.exceptions.RequestException as req_err:
+        raise RuntimeError(f"❌ Проблема з HTTP-запитом: {req_err}")
+    except ValueError as val_err:
+        raise RuntimeError(f"❌ Невірна відповідь API: {val_err}")
     except Exception as e:
         raise RuntimeError("❌ Помилка обробки відповіді від CoinMarketCap") from e
 
-# === Побудова графіка (поки просто один запис, як заглушка)
+# === Побудова графіка з DataFrame
 def plot_latest_data(df):
     fig, ax = plt.subplots()
     df.plot(ax=ax, legend=False)
@@ -55,7 +72,7 @@ def plot_latest_data(df):
     buf.seek(0)
     return buf
 
-# === Telegram Команди ===
+# === Telegram Команди
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         df = fetch_latest_data()
@@ -98,25 +115,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stop — зупинити авто-прогноз"
     )
 
-# === Автопрогнозування ===
+# === Автопрогнозування
 auto_tasks = {}
 
 async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
-    df = fetch_latest_data()
-    now_price = df["price"].iloc[-1]
-    predicted_price = now_price * 1.05
-    change = predicted_price - now_price
-    change_pct = (change / now_price) * 100
-    plot_buf = plot_latest_data(df)
+    try:
+        df = fetch_latest_data()
+        now_price = df["price"].iloc[-1]
+        predicted_price = now_price * 1.05
+        change = predicted_price - now_price
+        change_pct = (change / now_price) * 100
+        plot_buf = plot_latest_data(df)
 
-    text = (
-        f"📊 Поточна ціна: ${now_price:.2f}\n"
-        f"🔮 Прогноз: ${predicted_price:.2f}\n"
-        f"📈 Зміна: ${change:.2f} ({change_pct:.2f}%)"
-    )
-    await context.bot.send_message(chat_id=chat_id, text=text)
-    await context.bot.send_photo(chat_id=chat_id, photo=plot_buf)
+        text = (
+            f"📊 Поточна ціна: ${now_price:.2f}\n"
+            f"🔮 Прогноз: ${predicted_price:.2f}\n"
+            f"📈 Зміна: ${change:.2f} ({change_pct:.2f}%)"
+        )
+        await context.bot.send_message(chat_id=chat_id, text=text)
+        await context.bot.send_photo(chat_id=chat_id, photo=plot_buf)
+    except Exception as e:
+        await context.bot.send_message(chat_id=chat_id, text=f"❌ Помилка: {e}")
 
 async def auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -145,13 +165,13 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❗️ Авто-прогноз не запущено.")
 
-# === Flask для Render keep-alive ===
+# === Flask для Render keep-alive
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def index():
     return "✅ Бот працює!"
 
-# === Telegram Bot запуск ===
+# === Запуск Telegram бота
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 async def run_bot():
@@ -166,11 +186,10 @@ async def run_bot():
     await app.start()
     await app.updater.start_polling()
 
-# === Головний запуск: Flask + Telegram ===
+# === Головний запуск
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 4000))
     threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=port), daemon=True).start()
-
     loop = asyncio.get_event_loop()
     loop.create_task(run_bot())
     loop.run_forever()
