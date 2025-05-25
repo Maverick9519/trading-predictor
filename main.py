@@ -17,10 +17,10 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # --- Включаємо логування
 logging.basicConfig(level=logging.INFO)
 
-# === Алгоритм ===
+# === Алгоритм з фото ===
 def custom_algorithm(x: float, y: float, a: float, n: int) -> float:
     result = 0
-    for i in range(n, 0, -1):
+    for i in range(1, n + 1):
         result += (x**i + y) + a
     return result
 
