@@ -12,6 +12,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 import yfinance as yf
+from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 
 # === Налаштування
@@ -56,8 +57,36 @@ def plot_latest_data(df):
     buf.seek(0)
     return buf
 
-# === ML-прогноз (Random Forest)
-def rf_predict_price():
+# === Linear Regression
+def linear_predict_price():
+    df = yf.download("BTC-USD", period="2d", interval="1h")
+    df.dropna(inplace=True)
+
+    X = np.arange(len(df)).reshape(-1, 1)
+    y = df["Close"].values
+
+    model = LinearRegression()
+    model.fit(X, y)
+
+    next_index = np.array([[len(df)]])
+    next_price = model.predict(next_index)[0]
+
+    fig, ax = plt.subplots()
+    ax.plot(df.index, y, label="Історія")
+    ax.plot(df.index[-1] + pd.Timedelta(hours=1), next_price, 'go', label="Прогноз (Linear)")
+    plt.title("Прогноз BTC (Linear Regression)")
+    plt.xlabel("Час")
+    plt.ylabel("Ціна (USD)")
+    plt.legend()
+    plt.tight_layout()
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+    return y[-1], next_price, buf
+
+# === Random Forest
+def rf_predict_price(return_current_price=False):
     df = yf.download("BTC-USD", period="2d", interval="1h")
     df.dropna(inplace=True)
 
@@ -72,8 +101,8 @@ def rf_predict_price():
 
     fig, ax = plt.subplots()
     ax.plot(df.index, y, label="Історія")
-    ax.plot(df.index[-1] + pd.Timedelta(hours=1), next_price, 'ro', label="Прогноз")
-    plt.title("ML-прогноз BTC (Random Forest)")
+    ax.plot(df.index[-1] + pd.Timedelta(hours=1), next_price, 'ro', label="Прогноз (RF)")
+    plt.title("Прогноз BTC (Random Forest)")
     plt.xlabel("Час")
     plt.ylabel("Ціна (USD)")
     plt.legend()
@@ -82,6 +111,9 @@ def rf_predict_price():
     buf = BytesIO()
     plt.savefig(buf, format="png")
     buf.seek(0)
+
+    if return_current_price:
+        return y[-1], next_price, buf
     return next_price, buf
 
 # === Telegram-команди
@@ -89,29 +121,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я трейдинг-прогнозатор бот.\n"
         "Команди:\n"
-        "/predict — простий прогноз (+5%)\n"
+        "/predict [linear|rf] — прогноз ціни BTC\n"
         "/custom x y a n — власна формула\n"
         "/custom_predict y a n — формула з ціною BTC\n"
-        "/ml_predict — ML-прогноз (Random Forest)\n"
         "/auto [хв] — авто-прогноз\n"
         "/stop — зупинити авто-прогноз"
     )
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        df = fetch_latest_data()
-        now_price = df["price"].iloc[-1]
-        predicted_price = now_price * 1.05
+        model_type = context.args[0].lower() if context.args else "linear"
+
+        if model_type == "rf":
+            now_price, predicted_price, plot_buf = rf_predict_price(return_current_price=True)
+            model_name = "Random Forest"
+        else:
+            now_price, predicted_price, plot_buf = linear_predict_price()
+            model_name = "Linear Regression"
+
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
-        plot_buf = plot_latest_data(df)
+
         text = (
             f"📊 Поточна ціна: ${now_price:.2f}\n"
-            f"🔮 Прогноз (+5%): ${predicted_price:.2f}\n"
+            f"🔮 Прогноз ({model_name}): ${predicted_price:.2f}\n"
             f"📈 Зміна: ${change:.2f} ({change_pct:.2f}%)"
         )
         await update.message.reply_text(text)
         await update.message.reply_photo(photo=plot_buf)
+
     except Exception as e:
         logging.exception("❗️Помилка прогнозу")
         await update.message.reply_text(f"❌ Помилка: {e}")
@@ -148,27 +186,15 @@ async def custom_predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Помилка: {e}")
 
-async def ml_predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        price, plot_buf = rf_predict_price()
-        await update.message.reply_text(f"🌲 ML-прогноз BTC (Random Forest): ${price:.2f}")
-        await update.message.reply_photo(photo=plot_buf)
-    except Exception as e:
-        logging.exception("❗️Помилка ML-прогнозу")
-        await update.message.reply_text(f"❌ Помилка ML-прогнозу: {e}")
-
 # === Авто-прогноз
 auto_tasks = {}
 
 async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
     try:
-        df = fetch_latest_data()
-        now_price = df["price"].iloc[-1]
-        predicted_price = now_price * 1.05
+        now_price, predicted_price, plot_buf = linear_predict_price()
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
-        plot_buf = plot_latest_data(df)
         text = (
             f"📊 Поточна ціна: ${now_price:.2f}\n"
             f"🔮 Прогноз: ${predicted_price:.2f}\n"
@@ -219,7 +245,6 @@ async def run_bot():
     app.add_handler(CommandHandler("predict", predict))
     app.add_handler(CommandHandler("custom", custom))
     app.add_handler(CommandHandler("custom_predict", custom_predict))
-    app.add_handler(CommandHandler("ml_predict", ml_predict))
     app.add_handler(CommandHandler("auto", auto))
     app.add_handler(CommandHandler("stop", stop))
     await app.initialize()
