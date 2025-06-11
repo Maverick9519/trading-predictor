@@ -14,9 +14,12 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-# === Формула
+# === Авторський алгоритм
 def custom_algorithm(x: float, y: float, a: float, n: int) -> float:
-    return sum((x**i + y + a) for i in range(n, 0, -1))
+    A = 0
+    for i in range(n, 0, -1):
+        A += ((x ** i) + y) + a
+    return A
 
 # === Ціна BTC
 def fetch_latest_data():
@@ -61,13 +64,20 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         df = fetch_latest_data()
         now_price = df["price"].iloc[-1]
-        predicted_price = now_price * 1.05
+        
+        # Використовуємо авторську формулу
+        x = now_price
+        y = 100      # або будь-яке інше значення, що підходить до задачі
+        a = 50       # підфункція (регулятор)
+        n = 3        # глибина (можна адаптувати)
+        predicted_price = custom_algorithm(x, y, a, n)
+
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
         plot_buf = plot_latest_data(df)
         text = (
             f"📊 Поточна ціна: ${now_price:.2f}\n"
-            f"🔮 Прогноз: ${predicted_price:.2f}\n"
+            f"🔮 Прогноз (алгоритм A): ${predicted_price:.2f}\n"
             f"📈 Зміна: ${change:.2f} ({change_pct:.2f}%)"
         )
         await update.message.reply_text(text)
@@ -88,37 +98,12 @@ async def custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Помилка: {e}")
 
-async def custom_predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if len(context.args) != 3:
-            await update.message.reply_text("❗️ Формат: /custom_predict y a n")
-            return
-
-        df = fetch_latest_data()
-        x = df["price"].iloc[-1]
-
-        y = float(context.args[0])
-        a = float(context.args[1])
-        n = int(context.args[2])
-
-        result = custom_algorithm(x, y, a, n)
-
-        text = (
-            f"📊 Поточна ціна BTC (x) = {x:.2f}\n"
-            f"🔧 y = {y}, a = {a}, n = {n}\n"
-            f"🧮 Результат A = {result:.4f}"
-        )
-        await update.message.reply_text(text)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Помилка: {e}")
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я трейдинг-прогнозатор бот.\n"
         "Команди:\n"
         "/predict — отримати прогноз\n"
-        "/custom x y a n — власна формула з твоїм x\n"
-        "/custom_predict y a n — формула з ціною BTC як x\n"
+        "/custom x y a n — власна формула\n"
         "/auto [хв] — авто-прогноз\n"
         "/stop — зупинити авто-прогноз"
     )
@@ -131,7 +116,7 @@ async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
     try:
         df = fetch_latest_data()
         now_price = df["price"].iloc[-1]
-        predicted_price = now_price * 1.05
+        predicted_price = custom_algorithm(now_price, 100, 50, 3)
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
         plot_buf = plot_latest_data(df)
@@ -185,7 +170,6 @@ async def run_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
     app.add_handler(CommandHandler("custom", custom))
-    app.add_handler(CommandHandler("custom_predict", custom_predict))
     app.add_handler(CommandHandler("auto", auto))
     app.add_handler(CommandHandler("stop", stop))
     await app.initialize()
