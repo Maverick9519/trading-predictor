@@ -3,7 +3,6 @@ import threading
 import logging
 import asyncio
 import requests
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from io import BytesIO
@@ -12,18 +11,14 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from prophet import Prophet
 
-# === Налаштування логування та середовища
+# Налаштування
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-# === Завантаження історичних даних BTC з Binance
+# Завантаження історичних цін BTC
 def fetch_historical_data():
     url = "https://api.binance.com/api/v3/klines"
-    params = {
-        "symbol": "BTCUSDT",
-        "interval": "1d",
-        "limit": 100
-    }
+    params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 100}
     response = requests.get(url, params=params)
     response.raise_for_status()
     raw_data = response.json()
@@ -38,86 +33,68 @@ def fetch_historical_data():
     df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
     return df
 
-# === Побудова графіка прогнозу
+# Побудова графіка
 def plot_forecast(model, forecast):
     fig = model.plot(forecast)
-    plt.title("Bitcoin (прогноз)")
+    plt.title("Прогноз ціни Bitcoin на 3 дні")
     plt.xlabel("Дата")
     plt.ylabel("Ціна (USD)")
+    plt.grid(True)
     plt.tight_layout()
     buf = BytesIO()
     plt.savefig(buf, format='png')
     buf.seek(0)
     return buf
 
-# === Команда /predict
+# Команда /predict
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         df = fetch_historical_data()
         model = Prophet()
         model.fit(df)
 
-        future = model.make_future_dataframe(periods=1)
+        future = model.make_future_dataframe(periods=3)
         forecast = model.predict(future)
 
-        predicted_price = forecast.iloc[-1]["yhat"]
-        now_price = df["y"].iloc[-1]
-        change = predicted_price - now_price
-        change_pct = (change / now_price) * 100
+        current_price = df["y"].iloc[-1]
+        future_forecast = forecast.tail(3)[["ds", "yhat"]].copy()
+
+        text = f"\U0001F4CA Поточна ціна: ${current_price:.2f}\n"
+        text += "\n\U0001F52E Прогноз на наступні 3 дні:\n"
+        for _, row in future_forecast.iterrows():
+            predicted = row["yhat"]
+            date = row["ds"].strftime("%Y-%m-%d")
+            delta = predicted - current_price
+            delta_pct = (delta / current_price) * 100
+            text += f"📅 {date}: ${predicted:.2f} ({delta:+.2f}, {delta_pct:+.2f}%)\n"
 
         plot_buf = plot_forecast(model, forecast)
 
-        text = (
-            f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
-            f"\U0001F52E Прогноз: ${predicted_price:.2f}\n"
-            f"\U0001F4C8 Зміна: ${change:.2f} ({change_pct:.2f}%)"
-        )
         await update.message.reply_text(text)
         await update.message.reply_photo(photo=plot_buf)
+
     except Exception as e:
         logging.exception("❗️Помилка прогнозу")
         await update.message.reply_text(f"❌ Помилка: {e}")
 
-# === Команда /start
+# Старт
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я трейдинг-прогнозатор бот.\n"
         "Команди:\n"
-        "/predict — отримати прогноз\n"
+        "/predict — точний прогноз на 3 дні\n"
         "/auto [хв] — авто-прогноз\n"
         "/stop — зупинити авто-прогноз"
     )
 
-# === Авто-прогноз
+# Авто-прогноз
 auto_tasks = {}
 
 async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.chat_id
-    try:
-        df = fetch_historical_data()
-        model = Prophet()
-        model.fit(df)
-        future = model.make_future_dataframe(periods=1)
-        forecast = model.predict(future)
+    context.chat_data["auto"] = True
+    fake_update = type('FakeUpdate', (), {"message": type('FakeMessage', (), {"reply_text": lambda x: None})})()
+    await predict(fake_update, context)
 
-        predicted_price = forecast.iloc[-1]["yhat"]
-        now_price = df["y"].iloc[-1]
-        change = predicted_price - now_price
-        change_pct = (change / now_price) * 100
-
-        plot_buf = plot_forecast(model, forecast)
-
-        text = (
-            f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
-            f"\U0001F52E Прогноз: ${predicted_price:.2f}\n"
-            f"\U0001F4C8 Зміна: ${change:.2f} ({change_pct:.2f}%)"
-        )
-        await context.bot.send_message(chat_id=chat_id, text=text)
-        await context.bot.send_photo(chat_id=chat_id, photo=plot_buf)
-    except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ Помилка: {e}")
-
-# === Команда /auto
 async def auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if len(context.args) != 1:
@@ -133,7 +110,6 @@ async def auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Помилка: {e}")
 
-# === Команда /stop
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if chat_id in auto_tasks:
@@ -143,14 +119,14 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❗️ Авто-прогноз не запущено.")
 
-# === Flask-сервер для Render
+# Flask для пінгу
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def index():
     return "✅ Бот працює!"
 
-# === Запуск Telegram бота
+# Запуск Telegram бота
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 async def run_bot():
@@ -165,7 +141,7 @@ async def run_bot():
     await app.updater.start_polling()
     await asyncio.Event().wait()
 
-# === Головний запуск
+# Головний запуск
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 4000))
     threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=port), daemon=True).start()
