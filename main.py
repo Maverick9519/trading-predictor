@@ -10,44 +10,39 @@ from io import BytesIO
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from prophet import Prophet
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-# === Формула
-def custom_algorithm(x: float, y: float, a: float, n: int) -> float:
-    return sum((x**i + y + a) for i in range(n, 0, -1))
+# === Завантаження історичних даних BTC з Binance
 
-# === Ціна BTC
-def fetch_latest_data():
-    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
-    api_key = os.environ.get("COINMARKETCAP_API_KEY")
-    if not api_key:
-        raise RuntimeError("❌ Не вказано COINMARKETCAP_API_KEY у змінних середовища!")
-
-    headers = {
-        "Accepts": "application/json",
-        "X-CMC_PRO_API_KEY": api_key
+def fetch_historical_data():
+    url = "https://api.binance.com/api/v3/klines"
+    params = {
+        "symbol": "BTCUSDT",
+        "interval": "1d",
+        "limit": 100
     }
-    params = {"symbol": "BTC", "convert": "USD"}
+    response = requests.get(url, params=params)
+    response.raise_for_status()
+    raw_data = response.json()
+    df = pd.DataFrame(raw_data, columns=[
+        "timestamp", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "num_trades",
+        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
+    ])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
+    df["close"] = df["close"].astype(float)
+    df = df[["timestamp", "close"]]
+    df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
+    return df
 
-    response = requests.get(url, headers=headers, params=params)
-    try:
-        response.raise_for_status()
-        data = response.json()
-        price = data["data"]["BTC"]["quote"]["USD"]["price"]
-        timestamp = pd.Timestamp.now()
-        df = pd.DataFrame([[timestamp, price]], columns=["timestamp", "price"])
-        df.set_index("timestamp", inplace=True)
-        return df
-    except Exception as e:
-        raise RuntimeError(f"❌ API помилка: {e}")
+# === Побудова графіка Prophet
 
-# === Побудова графіка
-def plot_latest_data(df):
-    fig, ax = plt.subplots()
-    df.plot(ax=ax, legend=False)
-    plt.title("Bitcoin (поточна ціна)")
+def plot_forecast(model, forecast):
+    fig = model.plot(forecast)
+    plt.title("Bitcoin (прогноз)")
     plt.xlabel("Дата")
     plt.ylabel("Ціна (USD)")
     plt.tight_layout()
@@ -57,18 +52,28 @@ def plot_latest_data(df):
     return buf
 
 # === Telegram-команди
+
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        df = fetch_latest_data()
-        now_price = df["price"].iloc[-1]
-        predicted_price = now_price * 1.05
+        df = fetch_historical_data()
+        model = Prophet()
+        model.fit(df)
+
+        future = model.make_future_dataframe(periods=1)
+        forecast = model.predict(future)
+
+        predicted_price = forecast.iloc[-1]["yhat"]
+        now_price = df["y"].iloc[-1]
+
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
-        plot_buf = plot_latest_data(df)
+
+        plot_buf = plot_forecast(model, forecast)
+
         text = (
-            f"📊 Поточна ціна: ${now_price:.2f}\n"
-            f"🔮 Прогноз: ${predicted_price:.2f}\n"
-            f"📈 Зміна: ${change:.2f} ({change_pct:.2f}%)"
+            f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
+            f"\U0001F52E Прогноз: ${predicted_price:.2f}\n"
+            f"\U0001F4C8 Зміна: ${change:.2f} ({change_pct:.2f}%)"
         )
         await update.message.reply_text(text)
         await update.message.reply_photo(photo=plot_buf)
@@ -76,69 +81,40 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("❗️Помилка прогнозу")
         await update.message.reply_text(f"❌ Помилка: {e}")
 
-async def custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if len(context.args) != 4:
-            await update.message.reply_text("❗️ Введи 4 аргументи: /custom x y a n")
-            return
-        x, y, a = float(context.args[0]), float(context.args[1]), float(context.args[2])
-        n = int(context.args[3])
-        result = custom_algorithm(x, y, a, n)
-        await update.message.reply_text(f"🔢 Результат A = {result:.4f}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Помилка: {e}")
-
-async def custom_predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if len(context.args) != 3:
-            await update.message.reply_text("❗️ Формат: /custom_predict y a n")
-            return
-
-        df = fetch_latest_data()
-        x = df["price"].iloc[-1]
-
-        y = float(context.args[0])
-        a = float(context.args[1])
-        n = int(context.args[2])
-
-        result = custom_algorithm(x, y, a, n)
-
-        text = (
-            f"📊 Поточна ціна BTC (x) = {x:.2f}\n"
-            f"🔧 y = {y}, a = {a}, n = {n}\n"
-            f"🧮 Результат A = {result:.4f}"
-        )
-        await update.message.reply_text(text)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Помилка: {e}")
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я трейдинг-прогнозатор бот.\n"
         "Команди:\n"
         "/predict — отримати прогноз\n"
-        "/custom x y a n — власна формула з твоїм x\n"
-        "/custom_predict y a n — формула з ціною BTC як x\n"
         "/auto [хв] — авто-прогноз\n"
         "/stop — зупинити авто-прогноз"
     )
 
 # === Авто-прогноз
+
 auto_tasks = {}
 
 async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
     try:
-        df = fetch_latest_data()
-        now_price = df["price"].iloc[-1]
-        predicted_price = now_price * 1.05
+        df = fetch_historical_data()
+        model = Prophet()
+        model.fit(df)
+        future = model.make_future_dataframe(periods=1)
+        forecast = model.predict(future)
+
+        predicted_price = forecast.iloc[-1]["yhat"]
+        now_price = df["y"].iloc[-1]
+
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
-        plot_buf = plot_latest_data(df)
+
+        plot_buf = plot_forecast(model, forecast)
+
         text = (
-            f"📊 Поточна ціна: ${now_price:.2f}\n"
-            f"🔮 Прогноз: ${predicted_price:.2f}\n"
-            f"📈 Зміна: ${change:.2f} ({change_pct:.2f}%)"
+            f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
+            f"\U0001F52E Прогноз: ${predicted_price:.2f}\n"
+            f"\U0001F4C8 Зміна: ${change:.2f} ({change_pct:.2f}%)"
         )
         await context.bot.send_message(chat_id=chat_id, text=text)
         await context.bot.send_photo(chat_id=chat_id, photo=plot_buf)
@@ -184,8 +160,6 @@ async def run_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
-    app.add_handler(CommandHandler("custom", custom))
-    app.add_handler(CommandHandler("custom_predict", custom_predict))
     app.add_handler(CommandHandler("auto", auto))
     app.add_handler(CommandHandler("stop", stop))
     await app.initialize()
