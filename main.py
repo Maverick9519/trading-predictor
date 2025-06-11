@@ -14,14 +14,11 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-# === Авторський алгоритм
+# === Алгоритм A
 def custom_algorithm(x: float, y: float, a: float, n: int) -> float:
-    A = 0
-    for i in range(n, 0, -1):
-        A += ((x ** i) + y) + a
-    return A
+    return sum(((x ** i) + y + a) for i in range(n, 0, -1))
 
-# === Ціна BTC
+# === Отримати ціну BTC
 def fetch_latest_data():
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
     api_key = os.environ.get("COINMARKETCAP_API_KEY")
@@ -64,17 +61,16 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         df = fetch_latest_data()
         now_price = df["price"].iloc[-1]
-        
-        # Використовуємо авторську формулу
-        x = now_price
-        y = 100      # або будь-яке інше значення, що підходить до задачі
-        a = 50       # підфункція (регулятор)
-        n = 3        # глибина (можна адаптувати)
+
+        # Масштабування x
+        x = now_price / 1000
+        y, a, n = 100, 50, 3
         predicted_price = custom_algorithm(x, y, a, n)
 
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
         plot_buf = plot_latest_data(df)
+
         text = (
             f"📊 Поточна ціна: ${now_price:.2f}\n"
             f"🔮 Прогноз (алгоритм A): ${predicted_price:.2f}\n"
@@ -91,7 +87,8 @@ async def custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(context.args) != 4:
             await update.message.reply_text("❗️ Введи 4 аргументи: /custom x y a n")
             return
-        x, y, a = float(context.args[0]), float(context.args[1]), float(context.args[2])
+        x = float(context.args[0]) / 1000  # Масштабування
+        y, a = float(context.args[1]), float(context.args[2])
         n = int(context.args[3])
         result = custom_algorithm(x, y, a, n)
         await update.message.reply_text(f"🔢 Результат A = {result:.4f}")
@@ -116,13 +113,18 @@ async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
     try:
         df = fetch_latest_data()
         now_price = df["price"].iloc[-1]
-        predicted_price = custom_algorithm(now_price, 100, 50, 3)
+
+        x = now_price / 1000
+        y, a, n = 100, 50, 3
+        predicted_price = custom_algorithm(x, y, a, n)
+
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
         plot_buf = plot_latest_data(df)
+
         text = (
             f"📊 Поточна ціна: ${now_price:.2f}\n"
-            f"🔮 Прогноз: ${predicted_price:.2f}\n"
+            f"🔮 Прогноз (алгоритм A): ${predicted_price:.2f}\n"
             f"📈 Зміна: ${change:.2f} ({change_pct:.2f}%)"
         )
         await context.bot.send_message(chat_id=chat_id, text=text)
