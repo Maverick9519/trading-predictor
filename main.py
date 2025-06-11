@@ -12,11 +12,11 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from prophet import Prophet
 
+# === Налаштування логування та середовища
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
 # === Завантаження історичних даних BTC з Binance
-
 def fetch_historical_data():
     url = "https://api.binance.com/api/v3/klines"
     params = {
@@ -38,8 +38,7 @@ def fetch_historical_data():
     df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
     return df
 
-# === Побудова графіка Prophet
-
+# === Побудова графіка прогнозу
 def plot_forecast(model, forecast):
     fig = model.plot(forecast)
     plt.title("Bitcoin (прогноз)")
@@ -51,8 +50,7 @@ def plot_forecast(model, forecast):
     buf.seek(0)
     return buf
 
-# === Telegram-команди
-
+# === Команда /predict
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         df = fetch_historical_data()
@@ -64,7 +62,6 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         predicted_price = forecast.iloc[-1]["yhat"]
         now_price = df["y"].iloc[-1]
-
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
 
@@ -81,6 +78,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("❗️Помилка прогнозу")
         await update.message.reply_text(f"❌ Помилка: {e}")
 
+# === Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я трейдинг-прогнозатор бот.\n"
@@ -91,7 +89,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # === Авто-прогноз
-
 auto_tasks = {}
 
 async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
@@ -105,7 +102,6 @@ async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
 
         predicted_price = forecast.iloc[-1]["yhat"]
         now_price = df["y"].iloc[-1]
-
         change = predicted_price - now_price
         change_pct = (change / now_price) * 100
 
@@ -121,6 +117,7 @@ async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await context.bot.send_message(chat_id=chat_id, text=f"❌ Помилка: {e}")
 
+# === Команда /auto
 async def auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if len(context.args) != 1:
@@ -136,6 +133,7 @@ async def auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Помилка: {e}")
 
+# === Команда /stop
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if chat_id in auto_tasks:
@@ -145,14 +143,14 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❗️ Авто-прогноз не запущено.")
 
-# === Flask-сервер
+# === Flask-сервер для Render
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def index():
     return "✅ Бот працює!"
 
-# === Telegram бот
+# === Запуск Telegram бота
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 async def run_bot():
