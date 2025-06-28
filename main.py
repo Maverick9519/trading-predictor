@@ -113,13 +113,12 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             predicted_price = model.predict(X_pred_scaled)[0]
             now_price = df["y"].iloc[-1]
             change = predicted_price - now_price
-            change_pct = (change / now_price) * 100
 
             plot_buf = plot_rf_forecast(df, predicted_price)
             text = (
                 f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
                 f"\U0001F52E Прогноз (Random Forest): ${predicted_price:.2f}\n"
-                f"\U0001F4C8 Зміна: ${change:.2f} ({change_pct:.2f}%)"
+                f"\U0001F4C8 Зміна: ${change:.2f}"
             )
         else:
             model = Prophet()
@@ -130,13 +129,12 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             predicted_price = forecast.iloc[-1]["yhat"]
             now_price = df["y"].iloc[-1]
             change = predicted_price - now_price
-            change_pct = (change / now_price) * 100
 
             plot_buf = plot_forecast(model, forecast)
             text = (
                 f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
                 f"\U0001F52E Прогноз (Prophet): ${predicted_price:.2f}\n"
-                f"\U0001F4C8 Зміна: ${change:.2f} ({change_pct:.2f}%)"
+                f"\U0001F4C8 Зміна: ${change:.2f}"
             )
 
         await update.message.reply_text(text)
@@ -170,13 +168,12 @@ async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
         predicted_price = forecast.iloc[-1]["yhat"]
         now_price = df["y"].iloc[-1]
         change = predicted_price - now_price
-        change_pct = (change / now_price) * 100
 
         plot_buf = plot_forecast(model, forecast)
         text = (
             f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
             f"\U0001F52E Прогноз (Prophet): ${predicted_price:.2f}\n"
-            f"\U0001F4C8 Зміна: ${change:.2f} ({change_pct:.2f}%)"
+            f"\U0001F4C8 Зміна: ${change:.2f}"
         )
         await context.bot.send_message(chat_id=chat_id, text=text)
         await context.bot.send_photo(chat_id=chat_id, photo=plot_buf)
