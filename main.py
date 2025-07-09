@@ -79,14 +79,30 @@ def prepare_features(df):
     features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
     return df[features], df["y"], features
 
+# --- Людський фактор
+def apply_human_factor(price: float, mood: str = "neutral") -> float:
+    mood = mood.lower()
+    factors = {
+        "fear": -0.03,
+        "greed": 0.04,
+        "panic": -0.07,
+        "euphoria": 0.08,
+        "neutral": 0.0
+    }
+    h = factors.get(mood, 0.0)
+    return price * (1 + h)
+
 # --- Команда /predict
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         model_name = "prophet"
+        mood = "neutral"
         if context.args:
             for arg in context.args:
                 if arg.startswith("model="):
                     model_name = arg.split("=")[-1].lower()
+                elif arg.startswith("mood="):
+                    mood = arg.split("=")[-1].lower()
 
         df = fetch_historical_data()
 
@@ -111,6 +127,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             X_pred_scaled = scaler.transform(X_pred)
 
             predicted_price = model.predict(X_pred_scaled)[0]
+            predicted_price = apply_human_factor(predicted_price, mood)
             now_price = df["y"].iloc[-1]
             change = predicted_price - now_price
 
@@ -118,7 +135,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = (
                 f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
                 f"\U0001F52E Прогноз (Random Forest): ${predicted_price:.2f}\n"
-                f"\U0001F4C8 Зміна: ${change:.2f}"
+                f"\U0001F4C8 Зміна: ${change:.2f} ({mood})"
             )
         else:
             model = Prophet()
@@ -127,6 +144,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             forecast = model.predict(future)
 
             predicted_price = forecast.iloc[-1]["yhat"]
+            predicted_price = apply_human_factor(predicted_price, mood)
             now_price = df["y"].iloc[-1]
             change = predicted_price - now_price
 
@@ -134,7 +152,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = (
                 f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
                 f"\U0001F52E Прогноз (Prophet): ${predicted_price:.2f}\n"
-                f"\U0001F4C8 Зміна: ${change:.2f}"
+                f"\U0001F4C8 Зміна: ${change:.2f} ({mood})"
             )
 
         await update.message.reply_text(text)
@@ -148,7 +166,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я трейдинг-прогнозатор бот.\n"
         "Команди:\n"
-        "/predict — прогноз (model=prophet або model=randomforest)\n"
+        "/predict — прогноз (model=prophet або model=randomforest, mood=greed/fear/neutral...)\n"
         "/auto [хв] — авто-прогноз\n"
         "/stop — зупинити авто-прогноз"
     )
