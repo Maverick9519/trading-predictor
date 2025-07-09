@@ -19,7 +19,7 @@ from prophet import Prophet
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-# --- Завантаження історичних даних BTC
+# --- Завантаження історичних даних
 def fetch_historical_data():
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 100}
@@ -37,7 +37,7 @@ def fetch_historical_data():
     df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
     return df
 
-# --- Графік
+# --- Побудова графіку
 def plot_forecast(df, future_dates, predictions, model_name):
     plt.figure(figsize=(10, 5))
     plt.plot(df["ds"], df["y"], label="Історія")
@@ -52,7 +52,7 @@ def plot_forecast(df, future_dates, predictions, model_name):
     buf.seek(0)
     return buf
 
-# --- Фічі
+# --- Побудова фіч
 def prepare_features(df):
     df["day"] = df["ds"].dt.day
     df["month"] = df["ds"].dt.month
@@ -75,7 +75,7 @@ def apply_human_factor(price, mood):
     }
     return price * (1 + factors.get(mood.lower(), 0.0))
 
-# --- Прогноз
+# --- Команда /predict
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         model_type = "prophet"
@@ -96,7 +96,6 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         predicted_values = []
         future_dates = []
 
-        # --- Prophet
         if model_type == "prophet":
             model = Prophet()
             model.fit(df)
@@ -104,9 +103,8 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             forecast = model.predict(future)
             predicted_values = forecast.iloc[-days:]["yhat"].values
             future_dates = forecast.iloc[-days:]["ds"].values
-            label = "Prophet"
+            model_label = "Prophet"
 
-        # --- RandomForest
         elif model_type == "randomforest":
             X, y, features = prepare_features(df)
             scaler = StandardScaler()
@@ -115,8 +113,8 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             model.fit(X_scaled, y)
 
             last_row = df.iloc[-1:].copy()
-            for i in range(days):
-                new_row = {
+            for _ in range(days):
+                features_input = {
                     "day": last_row["ds"].dt.day.values[0],
                     "month": last_row["ds"].dt.month.values[0],
                     "year": last_row["ds"].dt.year.values[0],
@@ -124,16 +122,15 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "lag1": last_row["y"].values[0],
                     "lag2": df.iloc[-2]["y"]
                 }
-                X_pred = pd.DataFrame([new_row])[features]
+                X_pred = pd.DataFrame([features_input])[features]
                 X_pred_scaled = scaler.transform(X_pred)
                 pred = model.predict(X_pred_scaled)[0]
                 predicted_values.append(pred)
-                next_date = last_row["ds"].values[0] + np.timedelta64(1, 'D')
+                next_date = last_row["ds"].values[0] + pd.Timedelta(days=1)
                 future_dates.append(next_date)
                 last_row = pd.DataFrame({"ds": [next_date], "y": [pred]})
-            label = "RandomForest"
+            model_label = "RandomForest"
 
-        # --- SVR
         elif model_type == "svr":
             X, y, features = prepare_features(df)
             scaler = StandardScaler()
@@ -142,8 +139,8 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             model.fit(X_scaled, y)
 
             last_row = df.iloc[-1:].copy()
-            for i in range(days):
-                new_row = {
+            for _ in range(days):
+                features_input = {
                     "day": last_row["ds"].dt.day.values[0],
                     "month": last_row["ds"].dt.month.values[0],
                     "year": last_row["ds"].dt.year.values[0],
@@ -151,44 +148,40 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "lag1": last_row["y"].values[0],
                     "lag2": df.iloc[-2]["y"]
                 }
-                X_pred = pd.DataFrame([new_row])[features]
+                X_pred = pd.DataFrame([features_input])[features]
                 X_pred_scaled = scaler.transform(X_pred)
                 pred = model.predict(X_pred_scaled)[0]
                 predicted_values.append(pred)
-                next_date = last_row["ds"].values[0] + np.timedelta64(1, 'D')
+                next_date = last_row["ds"].values[0] + pd.Timedelta(days=1)
                 future_dates.append(next_date)
                 last_row = pd.DataFrame({"ds": [next_date], "y": [pred]})
-            label = "SVR"
+            model_label = "SVR"
 
         else:
-            await update.message.reply_text("❗️Невідома модель. Використай model=prophet, randomforest або svr")
+            await update.message.reply_text("❗️Модель не розпізнано. Використай model=prophet, svr або randomforest.")
             return
 
-        # --- Застосовуємо настрій
-        final_price = apply_human_factor(predicted_values[-1], mood)
-        change = final_price - now_price
-        percent = (change / now_price) * 100
+        predicted_price = apply_human_factor(predicted_values[-1], mood)
 
-        # --- Формуємо графік і відповідь
-        plot_buf = plot_forecast(df, future_dates, predicted_values, label)
+        plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
+
         text = (
             f"📊 Поточна ціна: ${now_price:.2f}\n"
-            f"🔮 Прогноз ({label}) на {days} дн.: ${final_price:.2f}\n"
-            f"📈 Зміна: ${change:.2f} ({percent:.2f}%)\n"
+            f"🔮 Прогноз ({model_label}): ${predicted_price:.2f}\n"
             f"🧠 Настрій: {mood}"
         )
 
         await update.message.reply_photo(photo=plot_buf, caption=text)
 
     except Exception as e:
-        logging.exception("❗️Помилка прогнозу")
+        logging.exception("❌ Помилка прогнозу")
         await update.message.reply_text(f"❌ Помилка: {e}")
 
-# --- /start
+# --- Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я крипто-прогнозатор 📈\n"
-        "Команда: /predict model=prophet/randomforest/svr days=1..7 mood=greed/fear/euphoria\n"
+        "Використай /predict model=prophet/randomforest/svr days=1..7 mood=greed/fear/euphoria/neutral\n"
         "Приклад: /predict model=svr days=3 mood=greed"
     )
 
