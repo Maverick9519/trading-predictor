@@ -89,14 +89,15 @@ def apply_human_factor(price: float, mood: str = "neutral") -> float:
         "euphoria": 0.08,
         "neutral": 0.0
     }
-    h = factors.get(mood, 0.0)
-    return price * (1 + h)
+    adjustment = factors.get(mood, 0.0)
+    return price * (1 + adjustment)
 
 # --- Команда /predict
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         model_name = "prophet"
         mood = "neutral"
+
         if context.args:
             for arg in context.args:
                 if arg.startswith("model="):
@@ -105,6 +106,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     mood = arg.split("=")[-1].lower()
 
         df = fetch_historical_data()
+        now_price = df["y"].iloc[-1]
 
         if model_name == "randomforest":
             X, y, feature_cols = prepare_features(df)
@@ -127,36 +129,29 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             X_pred_scaled = scaler.transform(X_pred)
 
             predicted_price = model.predict(X_pred_scaled)[0]
-            predicted_price = apply_human_factor(predicted_price, mood)
-            now_price = df["y"].iloc[-1]
-            change = predicted_price - now_price
-
+            model_label = "Random Forest"
             plot_buf = plot_rf_forecast(df, predicted_price)
-            text = (
-                f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
-                f"\U0001F52E Прогноз (Random Forest): ${predicted_price:.2f}\n"
-                f"\U0001F4C8 Зміна: ${change:.2f} ({mood})"
-            )
+
         else:
             model = Prophet()
             model.fit(df)
             future = model.make_future_dataframe(periods=1)
             forecast = model.predict(future)
-
             predicted_price = forecast.iloc[-1]["yhat"]
-            predicted_price = apply_human_factor(predicted_price, mood)
-            now_price = df["y"].iloc[-1]
-            change = predicted_price - now_price
-
+            model_label = "Prophet"
             plot_buf = plot_forecast(model, forecast)
-            text = (
-                f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
-                f"\U0001F52E Прогноз (Prophet): ${predicted_price:.2f}\n"
-                f"\U0001F4C8 Зміна: ${change:.2f} ({mood})"
-            )
+
+        predicted_price = apply_human_factor(predicted_price, mood)
+
+        text = (
+            f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
+            f"\U0001F52E Прогноз ({model_label}): ${predicted_price:.2f}\n"
+            f"Фактор настрою: {mood}"
+        )
 
         await update.message.reply_text(text)
         await update.message.reply_photo(photo=plot_buf)
+
     except Exception as e:
         logging.exception("❗️Помилка прогнозу")
         await update.message.reply_text(f"❌ Помилка: {e}")
@@ -185,13 +180,11 @@ async def auto_predict(context: ContextTypes.DEFAULT_TYPE):
 
         predicted_price = forecast.iloc[-1]["yhat"]
         now_price = df["y"].iloc[-1]
-        change = predicted_price - now_price
-
         plot_buf = plot_forecast(model, forecast)
+
         text = (
             f"\U0001F4CA Поточна ціна: ${now_price:.2f}\n"
-            f"\U0001F52E Прогноз (Prophet): ${predicted_price:.2f}\n"
-            f"\U0001F4C8 Зміна: ${change:.2f}"
+            f"\U0001F52E Прогноз (Prophet): ${predicted_price:.2f}"
         )
         await context.bot.send_message(chat_id=chat_id, text=text)
         await context.bot.send_photo(chat_id=chat_id, photo=plot_buf)
