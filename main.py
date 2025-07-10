@@ -64,17 +64,6 @@ def prepare_features(df):
     features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
     return df[features], df["y"], features
 
-# --- Людський фактор
-def apply_human_factor(price):
-    human_bias = 0.02  # +2%
-    return price * (1 + human_bias)
-
-# --- Команда /predict
-async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        model_type = "prophet"
-        days = 1
-
         if context.args:
             for arg in context.args:
                 if arg.startswith("model="):
