@@ -65,29 +65,20 @@ def prepare_features(df):
     return df[features], df["y"], features
 
 # --- Людський фактор
-def apply_human_factor(price, mood):
-    factors = {
-        "neutral": 0.0,
-        "fear": -0.03,
-        "greed": 0.04,
-        "panic": -0.07,
-        "euphoria": 0.08
-    }
-    return price * (1 + factors.get(mood.lower(), 0.0))
+def apply_human_factor(price):
+    human_bias = 0.02  # +2%
+    return price * (1 + human_bias)
 
 # --- Команда /predict
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         model_type = "prophet"
-        mood = "neutral"
         days = 1
 
         if context.args:
             for arg in context.args:
                 if arg.startswith("model="):
                     model_type = arg.split("=")[1].lower()
-                elif arg.startswith("mood="):
-                    mood = arg.split("=")[1].lower()
                 elif arg.startswith("days="):
                     days = int(arg.split("=")[1])
 
@@ -161,14 +152,13 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❗️Модель не розпізнано. Використай model=prophet, svr або randomforest.")
             return
 
-        predicted_price = apply_human_factor(predicted_values[-1], mood)
+        predicted_price = apply_human_factor(predicted_values[-1])
 
         plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
 
         text = (
             f"📊 Поточна ціна: ${now_price:.2f}\n"
-            f"🔮 Прогноз ({model_label}): ${predicted_price:.2f}\n"
-            f"🧠 Настрій: {mood}"
+            f"🔮 Прогноз ({model_label}): ${predicted_price:.2f}"
         )
 
         await update.message.reply_photo(photo=plot_buf, caption=text)
@@ -181,8 +171,8 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я крипто-прогнозатор 📈\n"
-        "Використай /predict model=prophet/randomforest/svr days=1..7 mood=greed/fear/euphoria/neutral\n"
-        "Приклад: /predict model=svr days=3 mood=greed"
+        "Використай /predict model=prophet/randomforest/svr days=1..7\n"
+        "Приклад: /predict model=svr days=3"
     )
 
 # --- Flask keep-alive
