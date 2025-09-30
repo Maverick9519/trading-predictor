@@ -5,6 +5,8 @@ import asyncio
 import requests
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")  # Додаємо бекенд для headless-сервера
 import matplotlib.pyplot as plt
 from io import BytesIO
 from flask import Flask
@@ -51,6 +53,7 @@ def plot_forecast(df, future_dates, predictions, model_name):
     buf = BytesIO()
     plt.savefig(buf, format='png')
     buf.seek(0)
+    plt.close()
     return buf
 
 # --- Побудова фіч
@@ -183,5 +186,12 @@ async def run_bot():
 # --- Запуск
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 4000))
-    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port), daemon=True).start()
-    asyncio.run(run_bot())
+
+    # Flask у окремому потоці
+    def run_flask():
+        flask_app.run(host="0.0.0.0", port=port)
+
+    threading.Thread(target=run_flask, daemon=True).start()
+
+    # Telegram-бот
+    asyncio.get_event_loop().run_until_complete(run_bot())
