@@ -39,13 +39,14 @@ def fetch_historical_data():
 
 # --- Побудова графіку
 def plot_forecast(df, future_dates, predictions, model_name):
-    plt.figure(figsize=(10, 5))
-    plt.plot(df["ds"], df["y"], label="Історія")
-    plt.plot(future_dates, predictions, linestyle='--', marker='o', label="Прогноз")
+    plt.figure(figsize=(12, 6))
+    plt.plot(df["ds"], df["y"], label="Історія", color="#2563eb", linewidth=2)
+    plt.plot(future_dates, predictions, label="Прогноз", color="#22c55e", linewidth=2, linestyle="--")
     plt.xlabel("Дата")
     plt.ylabel("Ціна (USD)")
     plt.title(f"Bitcoin ({model_name} прогноз)")
     plt.legend()
+    plt.grid(True, linestyle="--", alpha=0.3)
     plt.tight_layout()
     buf = BytesIO()
     plt.savefig(buf, format='png')
@@ -94,7 +95,6 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif model_type in ["randomforest", "svr"]:
             X, y, features = prepare_features(df)
 
-            # Масштабуємо тільки календарні ознаки
             scaler = StandardScaler()
             X_scaled = X.copy()
             X_scaled[["day", "month", "year", "dayofweek"]] = scaler.fit_transform(
@@ -132,7 +132,6 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 next_date = last_row["ds"].values[0] + pd.Timedelta(days=1)
                 future_dates.append(next_date)
 
-                # Оновлюємо лаги
                 prev2 = last_row["y"].values[0]
                 last_row = pd.DataFrame({"ds": [next_date], "y": [pred]})
 
