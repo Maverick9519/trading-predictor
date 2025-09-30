@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 # --- Завантаження історичних даних
 def fetch_historical_data():
     url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 100}
+    params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 200}
     response = requests.get(url, params=params)
     response.raise_for_status()
     raw_data = response.json()
@@ -64,6 +64,12 @@ def prepare_features(df):
     features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
     return df[features], df["y"], features
 
+# --- Команда /predict
+async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        model_type = "prophet"
+        days = 3
+
         if context.args:
             for arg in context.args:
                 if arg.startswith("model="):
@@ -85,14 +91,26 @@ def prepare_features(df):
             future_dates = forecast.iloc[-days:]["ds"].values
             model_label = "Prophet"
 
-        elif model_type == "randomforest":
+        elif model_type in ["randomforest", "svr"]:
             X, y, features = prepare_features(df)
+
+            # Масштабуємо тільки календарні ознаки
             scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            model = RandomForestRegressor(n_estimators=200, random_state=42)
+            X_scaled = X.copy()
+            X_scaled[["day", "month", "year", "dayofweek"]] = scaler.fit_transform(
+                X_scaled[["day", "month", "year", "dayofweek"]]
+            )
+
+            if model_type == "randomforest":
+                model = RandomForestRegressor(n_estimators=200, random_state=42)
+            else:
+                model = SVR(kernel='rbf')
+
             model.fit(X_scaled, y)
 
             last_row = df.iloc[-1:].copy()
+            prev2 = df.iloc[-2]["y"]
+
             for _ in range(days):
                 features_input = {
                     "day": last_row["ds"].dt.day.values[0],
@@ -100,54 +118,35 @@ def prepare_features(df):
                     "year": last_row["ds"].dt.year.values[0],
                     "dayofweek": last_row["ds"].dt.dayofweek.values[0],
                     "lag1": last_row["y"].values[0],
-                    "lag2": df.iloc[-2]["y"]
+                    "lag2": prev2,
                 }
+
                 X_pred = pd.DataFrame([features_input])[features]
-                X_pred_scaled = scaler.transform(X_pred)
+                X_pred_scaled = X_pred.copy()
+                X_pred_scaled[["day", "month", "year", "dayofweek"]] = scaler.transform(
+                    X_pred_scaled[["day", "month", "year", "dayofweek"]]
+                )
+
                 pred = model.predict(X_pred_scaled)[0]
                 predicted_values.append(pred)
                 next_date = last_row["ds"].values[0] + pd.Timedelta(days=1)
                 future_dates.append(next_date)
-                last_row = pd.DataFrame({"ds": [next_date], "y": [pred]})
-            model_label = "RandomForest"
 
-        elif model_type == "svr":
-            X, y, features = prepare_features(df)
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            model = SVR(kernel='rbf')
-            model.fit(X_scaled, y)
-
-            last_row = df.iloc[-1:].copy()
-            for _ in range(days):
-                features_input = {
-                    "day": last_row["ds"].dt.day.values[0],
-                    "month": last_row["ds"].dt.month.values[0],
-                    "year": last_row["ds"].dt.year.values[0],
-                    "dayofweek": last_row["ds"].dt.dayofweek.values[0],
-                    "lag1": last_row["y"].values[0],
-                    "lag2": df.iloc[-2]["y"]
-                }
-                X_pred = pd.DataFrame([features_input])[features]
-                X_pred_scaled = scaler.transform(X_pred)
-                pred = model.predict(X_pred_scaled)[0]
-                predicted_values.append(pred)
-                next_date = last_row["ds"].values[0] + pd.Timedelta(days=1)
-                future_dates.append(next_date)
+                # Оновлюємо лаги
+                prev2 = last_row["y"].values[0]
                 last_row = pd.DataFrame({"ds": [next_date], "y": [pred]})
-            model_label = "SVR"
+
+            model_label = "RandomForest" if model_type == "randomforest" else "SVR"
 
         else:
             await update.message.reply_text("❗️Модель не розпізнано. Використай model=prophet, svr або randomforest.")
             return
 
-        predicted_price = apply_human_factor(predicted_values[-1])
-
         plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
 
         text = (
             f"📊 Поточна ціна: ${now_price:.2f}\n"
-            f"🔮 Прогноз ({model_label}): ${predicted_price:.2f}"
+            f"🔮 Прогноз ({model_label}): ${predicted_values[-1]:.2f}"
         )
 
         await update.message.reply_photo(photo=plot_buf, caption=text)
