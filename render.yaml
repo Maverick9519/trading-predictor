@@ -7,6 +7,6 @@ services:
     startCommand: python main.py
     envVars:
       - key: TELEGRAM_TOKEN
-        value: 7632093001:AAGCtnh5lcq7O0UEJ0haBZZTcPQL_QW5Qf4
+        sync: false
       - key: COINMARKETCAP_API_KEY
-        value: 121f7db7-edbd-4cec-9a7c-54c61c1d47cc
+        sync: false
