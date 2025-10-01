@@ -6,7 +6,7 @@ import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 from io import BytesIO
-from flask import Flask
+from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from sklearn.ensemble import RandomForestRegressor
@@ -164,26 +164,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Приклад: /predict model=svr days=3"
     )
 
-# --- Flask keep-alive
+# --- Flask app
 flask_app = Flask(__name__)
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # https://твоє-доменне-ім’я.onrender.com/webhook
+
+application = Application.builder().token(TELEGRAM_TOKEN).build()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("predict", predict))
+
 @flask_app.route('/')
 def index():
     return "✅ Бот працює!"
 
-# --- Telegram запуск
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-async def run_bot():
-    logging.info("🚀 Бот запускається...")
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("predict", predict))
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    await asyncio.Event().wait()
+@flask_app.route('/webhook', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    asyncio.run(application.process_update(update))
+    return "ok"
 
 # --- Запуск
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 4000))
-    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port), daemon=True).start()
-    asyncio.run(run_bot())
+    # Встановлюємо webhook при старті
+    async def set_webhook():
+        await application.bot.set_webhook(WEBHOOK_URL + "/webhook")
+
+    asyncio.run(set_webhook())
+    flask_app.run(host="0.0.0.0", port=port)
