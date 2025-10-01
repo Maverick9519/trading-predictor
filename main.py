@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from io import BytesIO
 from flask import Flask, request
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
@@ -17,9 +17,13 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # <- в Render вкажи свій URL, напр. https://trading-predictor.onrender.com
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # напр. https://trading-predictor.onrender.com
+bot = Bot(token=TELEGRAM_TOKEN)
 
-# --- Завантаження даних з CoinMarketCap
+# --- Flask-додаток
+app = Flask(__name__)
+
+# --- Завантаження історичних даних з CoinMarketCap
 def fetch_historical_data():
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical"
     params = {
@@ -152,30 +156,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Приклад: /predict model=svr days=3"
     )
 
-# --- Flask додаток
-flask_app = Flask(__name__)
+# --- Telegram Application
+application = Application.builder().token(TELEGRAM_TOKEN).build()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("predict", predict))
 
+# --- Flask routes
 @app.route("/")
 def index():
     return "✅ Бот працює!"
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def telegram_webhook():
-    update = Update.de_json(request.get_json(force=True), bot.application.bot)
-    bot.application.update_queue.put(update)
+    update = Update.de_json(request.get_json(force=True), bot)
+    application.update_queue.put(update)
     return "ok"
 
 # --- Запуск
 if __name__ == "__main__":
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("predict", predict))
-
-    # встановлюємо webhook
     logging.info("🔗 Встановлюю webhook...")
-    application.bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
-
-    bot = application
+    bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
 
     port = int(os.environ.get("PORT", 5000))
-    flask_app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port)
