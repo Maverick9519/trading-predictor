@@ -32,7 +32,7 @@ def fetch_historical_data():
         "interval": "daily",
         "count": 200
     }
-    headers = {"X-CMC_PRO_API_KEY": os.environ["COINMARKETCAP_API_KEY"]}
+    headers = {"X-CMC_PRO_API_KEY": os.environ["121f7db7-edbd-4cec-9a7c-54c61c1d47cc"]}
     response = requests.get(url, headers=headers, params=params)
     response.raise_for_status()
     raw = response.json()["data"]["quotes"]
