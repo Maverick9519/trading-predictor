@@ -4,7 +4,7 @@ import logging
 import requests
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")  # важливо для серверного рендеру без дисплея
+matplotlib.use("Agg")  # щоб matplotlib працював на сервері без дисплея
 import matplotlib.pyplot as plt
 from io import BytesIO
 from flask import Flask, request, abort
@@ -16,11 +16,11 @@ from sklearn.preprocessing import StandardScaler
 from prophet import Prophet
 import asyncio
 
-# --- Налаштування логів
+# --- Логи
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Змінні середовища (перевірки)
+# --- Environment variables
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 CMC_KEY = os.environ.get("COINMARKETCAP_API_KEY")
@@ -32,11 +32,11 @@ if not WEBHOOK_URL:
 if not CMC_KEY:
     raise RuntimeError("COINMARKETCAP_API_KEY не знайдено в Environment variables.")
 
-# --- Ініціалізація бота та Flask
+# --- Ініціалізація бота і Flask
 bot = Bot(token=TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# --- Функція для отримання даних з CoinMarketCap
+# --- Отримання історичних даних (CoinMarketCap)
 def fetch_historical_data():
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical"
     params = {
@@ -61,8 +61,8 @@ def fetch_historical_data():
 # --- Малювання графіку
 def plot_forecast(df, future_dates, predictions, model_name):
     plt.figure(figsize=(12, 6))
-    plt.plot(df["ds"], df["y"], label="Історія", linewidth=2)
-    plt.plot(future_dates, predictions, label="Прогноз", linewidth=2, linestyle="--")
+    plt.plot(df["ds"], df["y"], label="Історія", linewidth=2, color="#2563eb")
+    plt.plot(future_dates, predictions, label="Прогноз", linewidth=2, linestyle="--", color="#22c55e")
     plt.xlabel("Дата")
     plt.ylabel("Ціна (USD)")
     plt.title(f"Bitcoin ({model_name} прогноз)")
@@ -75,7 +75,7 @@ def plot_forecast(df, future_dates, predictions, model_name):
     buf.seek(0)
     return buf
 
-# --- Підготовка фіч для ML моделей
+# --- Фічі для ML моделей
 def prepare_features(df):
     df = df.copy()
     df["day"] = df["ds"].dt.day
@@ -88,7 +88,7 @@ def prepare_features(df):
     features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
     return df[features], df["y"], features
 
-# --- Telegram команди
+# --- Команди Telegram
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я крипто-прогнозатор 📈\n"
@@ -173,7 +173,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Помилка під час /predict")
         await update.message.reply_text(f"❌ Помилка: {e}")
 
-# --- Ініціалізація Application
+# --- Application
 application = Application.builder().token(TELEGRAM_TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("predict", predict))
@@ -187,6 +187,7 @@ def index():
 def telegram_webhook():
     if request.method != "POST":
         abort(405)
+
     try:
         update = Update.de_json(request.get_json(force=True), bot)
     except Exception:
@@ -194,8 +195,8 @@ def telegram_webhook():
         return "bad request", 400
 
     async def process():
-        if not application.initialized:
-            await application.initialize()
+        await application.initialize()
+        await application.start()
         await application.process_update(update)
 
     try:
@@ -203,11 +204,12 @@ def telegram_webhook():
     except Exception:
         logger.exception("Помилка при process_update")
         return "error", 500
+
     return "ok", 200
 
 # --- Головний блок
 if __name__ == "__main__":
-    logger.info("Встановлюю webhook у Telegram...")
+    logger.info("Встановлюю webhook...")
     try:
         asyncio.run(bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}"))
         logger.info("Webhook встановлено: %s/%s", WEBHOOK_URL, TELEGRAM_TOKEN)
