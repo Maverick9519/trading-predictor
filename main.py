@@ -6,7 +6,7 @@ import requests
 import numpy as np
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")  # Додаємо бекенд для headless-сервера
+matplotlib.use("Agg")  # Використовуємо бекенд без дисплея
 import matplotlib.pyplot as plt
 from io import BytesIO
 from flask import Flask
@@ -15,7 +15,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
-from prophet import Prophet
 
 # --- Налаштування
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -71,7 +70,7 @@ def prepare_features(df):
 # --- Команда /predict
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        model_type = "prophet"
+        model_type = "randomforest"
         days = 3
 
         if context.args:
@@ -86,16 +85,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         predicted_values = []
         future_dates = []
 
-        if model_type == "prophet":
-            model = Prophet()
-            model.fit(df)
-            future = model.make_future_dataframe(periods=days)
-            forecast = model.predict(future)
-            predicted_values = forecast.iloc[-days:]["yhat"].values
-            future_dates = forecast.iloc[-days:]["ds"].values
-            model_label = "Prophet"
-
-        elif model_type in ["randomforest", "svr"]:
+        if model_type in ["randomforest", "svr"]:
             X, y, features = prepare_features(df)
 
             scaler = StandardScaler()
@@ -141,7 +131,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             model_label = "RandomForest" if model_type == "randomforest" else "SVR"
 
         else:
-            await update.message.reply_text("❗️Модель не розпізнано. Використай model=prophet, svr або randomforest.")
+            await update.message.reply_text("❗️Модель не розпізнано. Використай model=svr або randomforest.")
             return
 
         plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
@@ -161,7 +151,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я крипто-прогнозатор 📈\n"
-        "Використай /predict model=prophet/randomforest/svr days=1..7\n"
+        "Використай /predict model=randomforest/svr days=1..7\n"
         "Приклад: /predict model=svr days=3"
     )
 
@@ -187,11 +177,8 @@ async def run_bot():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 4000))
 
-    # Flask у окремому потоці
     def run_flask():
         flask_app.run(host="0.0.0.0", port=port)
 
     threading.Thread(target=run_flask, daemon=True).start()
-
-    # Telegram-бот
     asyncio.get_event_loop().run_until_complete(run_bot())
