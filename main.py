@@ -3,10 +3,7 @@ import threading
 import logging
 import asyncio
 import requests
-import numpy as np
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")  # Використовуємо бекенд без дисплея
 import matplotlib.pyplot as plt
 from io import BytesIO
 from flask import Flask
@@ -15,27 +12,31 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
+from prophet import Prophet
 
 # --- Налаштування
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-# --- Завантаження історичних даних
+# --- Завантаження історичних даних з CoinMarketCap
 def fetch_historical_data():
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 200}
-    response = requests.get(url, params=params)
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical"
+    params = {
+        "symbol": "BTC",
+        "convert": "USD",
+        "interval": "daily",
+        "count": 200
+    }
+    headers = {"X-CMC_PRO_API_KEY": os.environ["COINMARKETCAP_API_KEY"]}
+    response = requests.get(url, headers=headers, params=params)
     response.raise_for_status()
-    raw_data = response.json()
-    df = pd.DataFrame(raw_data, columns=[
-        "timestamp", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "num_trades",
-        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
-    ])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
-    df["close"] = df["close"].astype(float)
-    df = df[["timestamp", "close"]]
-    df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
+
+    raw = response.json()["data"]["quotes"]
+
+    df = pd.DataFrame([{
+        "ds": pd.to_datetime(item["timestamp"]),
+        "y": float(item["quote"]["USD"]["close"])
+    } for item in raw])
     return df
 
 # --- Побудова графіку
@@ -52,7 +53,6 @@ def plot_forecast(df, future_dates, predictions, model_name):
     buf = BytesIO()
     plt.savefig(buf, format='png')
     buf.seek(0)
-    plt.close()
     return buf
 
 # --- Побудова фіч
@@ -70,7 +70,7 @@ def prepare_features(df):
 # --- Команда /predict
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        model_type = "randomforest"
+        model_type = "prophet"
         days = 3
 
         if context.args:
@@ -85,7 +85,16 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         predicted_values = []
         future_dates = []
 
-        if model_type in ["randomforest", "svr"]:
+        if model_type == "prophet":
+            model = Prophet()
+            model.fit(df)
+            future = model.make_future_dataframe(periods=days)
+            forecast = model.predict(future)
+            predicted_values = forecast.iloc[-days:]["yhat"].values
+            future_dates = forecast.iloc[-days:]["ds"].values
+            model_label = "Prophet"
+
+        elif model_type in ["randomforest", "svr"]:
             X, y, features = prepare_features(df)
 
             scaler = StandardScaler()
@@ -131,7 +140,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             model_label = "RandomForest" if model_type == "randomforest" else "SVR"
 
         else:
-            await update.message.reply_text("❗️Модель не розпізнано. Використай model=svr або randomforest.")
+            await update.message.reply_text("❗️Модель не розпізнано. Використай model=prophet, svr або randomforest.")
             return
 
         plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
@@ -151,7 +160,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я крипто-прогнозатор 📈\n"
-        "Використай /predict model=randomforest/svr days=1..7\n"
+        "Використай /predict model=prophet/randomforest/svr days=1..7\n"
         "Приклад: /predict model=svr days=3"
     )
 
@@ -176,9 +185,5 @@ async def run_bot():
 # --- Запуск
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 4000))
-
-    def run_flask():
-        flask_app.run(host="0.0.0.0", port=port)
-
-    threading.Thread(target=run_flask, daemon=True).start()
-    asyncio.get_event_loop().run_until_complete(run_bot())
+    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port), daemon=True).start()
+    asyncio.run(run_bot())
