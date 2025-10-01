@@ -1,8 +1,9 @@
 services:
   - type: web
-    name: telegram-crypto-bot
+    name: crypto-bot
     env: python
-    buildCommand: pip install -r requirements.txt
+    plan: free
+    buildCommand: ""
     startCommand: python main.py
     envVars:
       - key: TELEGRAM_TOKEN
