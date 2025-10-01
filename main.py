@@ -49,7 +49,6 @@ def fetch_historical_data():
     resp = requests.get(url, headers=headers, params=params, timeout=15)
     resp.raise_for_status()
     data = resp.json()
-    # безпека: перевіряємо, що в відповіді є очікувані поля
     if "data" not in data or "quotes" not in data["data"]:
         raise ValueError("Невірна відповідь від CoinMarketCap API")
     raw = data["data"]["quotes"]
@@ -89,7 +88,7 @@ def prepare_features(df):
     features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
     return df[features], df["y"], features
 
-# --- Telegram команди (async)
+# --- Telegram команди
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я крипто-прогнозатор 📈\n"
@@ -108,7 +107,6 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif arg.startswith("days="):
                     days = int(arg.split("=", 1)[1])
 
-        # отримуємо дані
         df = fetch_historical_data()
         now_price = df["y"].iloc[-1]
         predicted_values = []
@@ -175,7 +173,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Помилка під час /predict")
         await update.message.reply_text(f"❌ Помилка: {e}")
 
-# --- Ініціалізація Application (telegram.ext)
+# --- Ініціалізація Application
 application = Application.builder().token(TELEGRAM_TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("predict", predict))
@@ -187,32 +185,33 @@ def index():
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def telegram_webhook():
-    """Обробник webhook: отримує JSON від Telegram і передає в PTB"""
     if request.method != "POST":
         abort(405)
     try:
         update = Update.de_json(request.get_json(force=True), bot)
-    except Exception as e:
+    except Exception:
         logger.exception("Не вдалось розпарсити Update")
         return "bad request", 400
 
-    # Викликаємо process_update як корутину через asyncio.run.
-    # Це простий і надійний підхід для невеликого навантаження.
+    async def process():
+        if not application.initialized:
+            await application.initialize()
+        await application.process_update(update)
+
     try:
-        asyncio.run(application.process_update(update))
-    except Exception as e:
+        asyncio.run(process())
+    except Exception:
         logger.exception("Помилка при process_update")
         return "error", 500
     return "ok", 200
 
-# --- Головний блок: встановлюємо webhook і запускаємо Flask
+# --- Головний блок
 if __name__ == "__main__":
     logger.info("Встановлюю webhook у Telegram...")
-    # set_webhook — асинхронна, тому запускаємо через asyncio.run
     try:
         asyncio.run(bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}"))
         logger.info("Webhook встановлено: %s/%s", WEBHOOK_URL, TELEGRAM_TOKEN)
-    except Exception as e:
+    except Exception:
         logger.exception("Не вдалось встановити webhook")
         raise
 
