@@ -75,15 +75,18 @@ def prepare_features(df):
     features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
     return df[features], df["y"], features
 
-# --- Telegram команди
+# --- Telegram команди з логами
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id if update.effective_user else "unknown"
+    logger.info(f"Отримано /start від користувача {user_id}")
     await update.message.reply_text(
-        "Привіт! Я крипто-прогнозатор 📈\n"
-        "Використай /predict model=prophet/randomforest/svr days=1..7\n"
-        "Приклад: /predict model=svr days=3"
+        "Бот працює ✅\n"
+        "Використай /predict model=prophet/randomforest/svr days=1..7"
     )
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id if update.effective_user else "unknown"
+    logger.info(f"Отримано /predict від користувача {user_id} з args={context.args}")
     try:
         model_type = "prophet"
         days = 3
@@ -173,19 +176,21 @@ def index():
 def webhook():
     try:
         update = Update.de_json(request.get_json(force=True), bot)
+        logger.info(f"Отримано update: {update}")
         loop.create_task(application.update_queue.put(update))
         return "ok", 200
     except Exception as e:
         logger.exception("❌ Помилка у webhook")
         return "error", 500
 
-# --- Додатковий маршрут для тесту POST
+# --- Тестовий POST для перевірки
 @app.route("/bot", methods=["POST"])
 def test_bot():
     data = request.json
     if not data or "message" not in data:
         return jsonify({"error": "Немає 'message' в запиті"}), 400
     message = data["message"]
+    logger.info(f"Тестове повідомлення: {message}")
     return jsonify({"reply": f"Ви написали: {message}"}), 200
 
 # --- Запуск Flask
