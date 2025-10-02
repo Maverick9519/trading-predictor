@@ -5,7 +5,7 @@ import asyncio
 import requests
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")  # важливо для серверів без GUI
+matplotlib.use("Agg")  # для серверів без GUI
 import matplotlib.pyplot as plt
 from io import BytesIO
 from flask import Flask
@@ -20,36 +20,52 @@ from prophet import Prophet
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-# --- Завантаження історичних даних з Binance
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CMC_KEY = os.environ.get("COINMARKETCAP_API_KEY")
+
+if not TELEGRAM_TOKEN:
+    raise RuntimeError("❌ TELEGRAM_TOKEN не знайдено в Environment variables")
+if not CMC_KEY:
+    raise RuntimeError("❌ COINMARKETCAP_API_KEY не знайдено в Environment variables")
+
+# --- Завантаження історичних даних з CoinMarketCap
 def fetch_historical_data():
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 100}
-    response = requests.get(url, params=params)
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical"
+    params = {
+        "symbol": "BTC",
+        "convert": "USD",
+        "interval": "daily",
+        "count": 200
+    }
+    headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+    response = requests.get(url, headers=headers, params=params, timeout=15)
     response.raise_for_status()
-    raw_data = response.json()
-    df = pd.DataFrame(raw_data, columns=[
-        "timestamp", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "num_trades",
-        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
-    ])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
-    df["close"] = df["close"].astype(float)
-    df = df[["timestamp", "close"]]
-    df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
+    data = response.json()
+
+    if "data" not in data or "quotes" not in data["data"]:
+        raise ValueError("Невірна відповідь від CoinMarketCap API")
+
+    raw = data["data"]["quotes"]
+    df = pd.DataFrame([{
+        "ds": pd.to_datetime(item["timestamp"]),
+        "y": float(item["quote"]["USD"]["close"])
+    } for item in raw])
     return df
 
 # --- Побудова графіку
 def plot_forecast(df, future_dates, predictions, model_name):
     plt.figure(figsize=(10, 5))
-    plt.plot(df["ds"], df["y"], label="Історія")
-    plt.plot(future_dates, predictions, linestyle='--', marker='o', label="Прогноз")
+    plt.plot(df["ds"], df["y"], label="Історія", linewidth=2)
+    plt.plot(future_dates, predictions, linestyle='--', marker='o', label="Прогноз", linewidth=2)
     plt.xlabel("Дата")
     plt.ylabel("Ціна (USD)")
     plt.title(f"Bitcoin ({model_name} прогноз)")
     plt.legend()
+    plt.grid(True, linestyle="--", alpha=0.3)
     plt.tight_layout()
     buf = BytesIO()
     plt.savefig(buf, format='png')
+    plt.close()
     buf.seek(0)
     return buf
 
@@ -177,7 +193,6 @@ def index():
     return "✅ Бот працює!"
 
 # --- Telegram запуск
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 async def run_bot():
     logging.info("🚀 Бот запускається...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
