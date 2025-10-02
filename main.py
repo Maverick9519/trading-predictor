@@ -17,22 +17,18 @@ logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
-# --- Завантаження історичних даних з Binance
+# --- Завантаження історичних даних з CoinGecko
 def fetch_historical_data():
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 200}
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+    params = {"vs_currency": "usd", "days": "200"}  # останні 200 днів
     resp = requests.get(url, params=params)
     resp.raise_for_status()
-    raw_data = resp.json()
-    df = pd.DataFrame(raw_data, columns=[
-        "timestamp", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "num_trades",
-        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
-    ])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
-    df["close"] = df["close"].astype(float)
-    df = df[["timestamp", "close"]]
-    df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
+    data = resp.json()
+
+    prices = data["prices"]  # список [timestamp, price]
+    df = pd.DataFrame(prices, columns=["timestamp", "y"])
+    df["ds"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df = df[["ds", "y"]]
     return df
 
 # --- Побудова графіку
