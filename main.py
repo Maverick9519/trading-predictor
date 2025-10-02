@@ -1,52 +1,47 @@
 import os
-import threading
 import logging
 import asyncio
 import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 from io import BytesIO
-from flask import Flask
-from telegram import Update
+from flask import Flask, request
+from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
 from prophet import Prophet
-from datetime import datetime, timedelta
 
 # --- Налаштування
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
+# --- Telegram token та webhook URL
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY")
-if not TELEGRAM_TOKEN or not COINMARKETCAP_API_KEY:
-    raise RuntimeError("❌ TELEGRAM_TOKEN або COINMARKETCAP_API_KEY не задані!")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # наприклад: https://yourapp.onrender.com
 
-# --- Завантаження історичних даних з CoinMarketCap
+bot = Bot(token=TELEGRAM_TOKEN)
+
+# --- Flask додаток
+flask_app = Flask(__name__)
+
+# --- Завантаження історичних даних з Binance
 def fetch_historical_data():
-    end = datetime.utcnow()
-    start = end - timedelta(days=200)
-
-    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
-    params = {
-        "symbol": "BTC",
-        "convert": "USD",
-        "time_start": int(start.timestamp()),
-        "time_end": int(end.timestamp()),
-    }
-    headers = {"X-CMC_PRO_API_KEY": COINMARKETCAP_API_KEY}
-
-    response = requests.get(url, params=params, headers=headers)
-    response.raise_for_status()
-    data = response.json()
-
-    quotes = data["data"]["quotes"]
-    df = pd.DataFrame([
-        {"ds": datetime.fromtimestamp(q["time_open"]), "y": q["quote"]["USD"]["close"]}
-        for q in quotes
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 200}
+    resp = requests.get(url, params=params)
+    resp.raise_for_status()
+    raw_data = resp.json()
+    df = pd.DataFrame(raw_data, columns=[
+        "timestamp", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "num_trades",
+        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
     ])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
+    df["close"] = df["close"].astype(float)
+    df = df[["timestamp", "close"]]
+    df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
     return df
 
 # --- Побудова графіку
@@ -77,12 +72,18 @@ def prepare_features(df):
     features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
     return df[features], df["y"], features
 
-# --- Команда /predict
+# --- Команди бота
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Привіт! Я крипто-прогнозатор 📈\n"
+        "Використай /predict model=prophet/randomforest/svr days=1..7\n"
+        "Приклад: /predict model=svr days=3"
+    )
+
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         model_type = "prophet"
         days = 3
-
         if context.args:
             for arg in context.args:
                 if arg.startswith("model="):
@@ -106,14 +107,17 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif model_type in ["randomforest", "svr"]:
             X, y, features = prepare_features(df)
-
             scaler = StandardScaler()
             X_scaled = X.copy()
             X_scaled[["day", "month", "year", "dayofweek"]] = scaler.fit_transform(
                 X_scaled[["day", "month", "year", "dayofweek"]]
             )
 
-            model = RandomForestRegressor(n_estimators=200, random_state=42) if model_type == "randomforest" else SVR(kernel='rbf')
+            if model_type == "randomforest":
+                model = RandomForestRegressor(n_estimators=200, random_state=42)
+            else:
+                model = SVR(kernel='rbf')
+
             model.fit(X_scaled, y)
 
             last_row = df.iloc[-1:].copy()
@@ -128,7 +132,6 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "lag1": last_row["y"].values[0],
                     "lag2": prev2,
                 }
-
                 X_pred = pd.DataFrame([features_input])[features]
                 X_pred_scaled = X_pred.copy()
                 X_pred_scaled[["day", "month", "year", "dayofweek"]] = scaler.transform(
@@ -139,7 +142,6 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 predicted_values.append(pred)
                 next_date = last_row["ds"].values[0] + pd.Timedelta(days=1)
                 future_dates.append(next_date)
-
                 prev2 = last_row["y"].values[0]
                 last_row = pd.DataFrame({"ds": [next_date], "y": [pred]})
 
@@ -150,7 +152,6 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
-
         text = f"📊 Поточна ціна: ${now_price:.2f}\n🔮 Прогноз ({model_label}): ${predicted_values[-1]:.2f}"
         await update.message.reply_photo(photo=plot_buf, caption=text)
 
@@ -158,32 +159,31 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("❌ Помилка прогнозу")
         await update.message.reply_text(f"❌ Помилка: {e}")
 
-# --- Команда /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Привіт! Я крипто-прогнозатор 📈\n"
-        "Використай /predict model=prophet/randomforest/svr days=1..7\n"
-        "Приклад: /predict model=svr days=3"
-    )
+# --- Flask route для webhook
+@flask_app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
+def webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, bot)
+    asyncio.create_task(application.update_queue.put(update))
+    return "ok", 200
 
-# --- Flask keep-alive
-flask_app = Flask(__name__)
+# --- Flask route для тесту
 @flask_app.route('/')
 def index():
     return "✅ Бот працює!"
 
-# --- Telegram запуск через Application
-async def run_bot():
-    logging.info("🚀 Бот запускається...")
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("predict", predict))
-    await app.initialize()
-    await app.start()
-    await asyncio.Event().wait()  # щоб не закривався
+# --- Telegram Application
+application = Application.builder().token(TELEGRAM_TOKEN).build()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("predict", predict))
 
-# --- Запуск
+# --- Запуск webhook на Render
 if __name__ == '__main__':
+    # Встановлюємо webhook
+    async def set_webhook():
+        await bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}")
+        logging.info("✅ Webhook встановлено")
+
+    asyncio.run(set_webhook())
     port = int(os.environ.get("PORT", 4000))
-    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port), daemon=True).start()
-    asyncio.run(run_bot())
+    flask_app.run(host="0.0.0.0", port=port)
