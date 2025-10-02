@@ -1,8 +1,6 @@
 # main.py
 import os
-import threading
 import logging
-import asyncio
 import requests
 import pandas as pd
 import matplotlib
@@ -16,6 +14,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
 from prophet import Prophet
+import asyncio
 
 # --- Логи
 logging.basicConfig(level=logging.INFO)
@@ -23,39 +22,21 @@ logger = logging.getLogger(__name__)
 
 # --- Змінні середовища
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CMC_KEY = os.environ.get("COINMARKETCAP_API_KEY")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 if not TELEGRAM_TOKEN or not WEBHOOK_URL:
     raise RuntimeError("❌ TELEGRAM_TOKEN або WEBHOOK_URL не задані.")
 
 bot = Bot(token=TELEGRAM_TOKEN)
-flask_app = Flask(__name__)
+app = Flask(__name__)
 
-# --- Дані з CoinMarketCap
-def fetch_cmc_data():
-    if not CMC_KEY:
-        raise RuntimeError("❌ COINMARKETCAP_API_KEY не заданий.")
-    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical"
-    params = {"symbol": "BTC", "convert": "USD", "interval": "daily", "count": 200}
-    headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-    resp = requests.get(url, headers=headers, params=params, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-    if "data" not in data or "quotes" not in data["data"]:
-        raise ValueError("Невірна відповідь від CoinMarketCap API")
-    raw = data["data"]["quotes"]
-    df = pd.DataFrame([{"ds": pd.to_datetime(item["timestamp"]),
-                        "y": float(item["quote"]["USD"]["close"])} for item in raw])
-    return df
-
-# --- Дані з Binance (альтернатива)
-def fetch_binance_data():
+# --- Дані з Binance
+def fetch_historical_data():
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 100}
-    resp = requests.get(url, params=params)
-    resp.raise_for_status()
-    raw_data = resp.json()
+    response = requests.get(url, params=params)
+    response.raise_for_status()
+    raw_data = response.json()
     df = pd.DataFrame(raw_data, columns=[
         "timestamp","open","high","low","close","volume","close_time",
         "quote_asset_volume","num_trades","taker_buy_base_volume",
@@ -68,17 +49,16 @@ def fetch_binance_data():
 
 # --- Побудова графіку
 def plot_forecast(df, future_dates, predictions, model_name):
-    plt.figure(figsize=(12,6))
-    plt.plot(df["ds"], df["y"], label="Історія", color="blue", linewidth=2)
-    plt.plot(future_dates, predictions, label="Прогноз", color="green", linestyle="--", linewidth=2)
+    plt.figure(figsize=(10, 5))
+    plt.plot(df["ds"], df["y"], label="Історія")
+    plt.plot(future_dates, predictions, linestyle='--', marker='o', label="Прогноз")
     plt.xlabel("Дата")
     plt.ylabel("Ціна (USD)")
     plt.title(f"Bitcoin ({model_name} прогноз)")
     plt.legend()
-    plt.grid(True, linestyle="--", alpha=0.3)
+    plt.tight_layout()
     buf = BytesIO()
-    plt.savefig(buf, format="png")
-    plt.close()
+    plt.savefig(buf, format='png')
     buf.seek(0)
     return buf
 
@@ -97,8 +77,8 @@ def prepare_features(df):
 
 # --- Telegram команди
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.id if update.effective_user else "unknown"
-    logger.info(f"/start від користувача {user}")
+    user_id = update.effective_user.id if update.effective_user else "unknown"
+    logger.info(f"/start від користувача {user_id}")
     await update.message.reply_text(
         "Привіт! Я крипто-прогнозатор 📈\n"
         "Використай /predict model=prophet/randomforest/svr days=1..7\n"
@@ -106,8 +86,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.id if update.effective_user else "unknown"
-    logger.info(f"/predict від {user} з args={context.args}")
+    user_id = update.effective_user.id if update.effective_user else "unknown"
+    logger.info(f"/predict від {user_id} з args={context.args}")
     try:
         model_type = "prophet"
         days = 3
@@ -118,8 +98,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif arg.startswith("days="):
                     days = int(arg.split("=")[1])
 
-        # df = fetch_binance_data()  # альтернативно
-        df = fetch_cmc_data()
+        df = fetch_historical_data()
         now_price = df["y"].iloc[-1]
         predicted_values, future_dates = [], []
 
@@ -178,17 +157,17 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Помилка у /predict")
         await update.message.reply_text(f"❌ Помилка: {e}")
 
-# --- Telegram Application
+# --- Application Telegram
 application = Application.builder().token(TELEGRAM_TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("predict", predict))
 
 # --- Flask маршрути
-@flask_app.route("/")
+@app.route("/")
 def index():
     return "✅ Бот працює!"
 
-@flask_app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
+@app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     try:
         update = Update.de_json(request.get_json(force=True), bot)
@@ -199,11 +178,10 @@ def webhook():
         logger.exception("❌ Помилка у webhook")
         return "error", 500
 
-# --- Запуск Flask + Telegram
+# --- Запуск Flask + webhook
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port), daemon=True).start()
-    logger.info("🚀 Бот запускається...")
-    asyncio.run(application.initialize())
-    asyncio.run(application.start())
-    logger.info("Бот готовий!")
+    logger.info(f"Встановлюю webhook на {WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}")
+    asyncio.run(bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"))
+    logger.info("Webhook встановлено!")
+    app.run(host="0.0.0.0", port=port)
