@@ -19,22 +19,33 @@ from prophet import Prophet
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-# --- Завантаження історичних даних
+CMC_KEY = os.environ.get("COINMARKETCAP_API_KEY")
+if not CMC_KEY:
+    raise RuntimeError("❌ Не заданий COINMARKETCAP_API_KEY")
+
+# --- Завантаження історичних даних через CoinMarketCap
 def fetch_historical_data():
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 200}
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    raw_data = response.json()
-    df = pd.DataFrame(raw_data, columns=[
-        "timestamp", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "num_trades",
-        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
-    ])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
-    df["close"] = df["close"].astype(float)
-    df = df[["timestamp", "close"]]
-    df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical"
+    params = {
+        "symbol": "BTC",
+        "convert": "USD",
+        "interval": "daily",
+        "count": 200  # останні 200 днів
+    }
+    headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+    resp = requests.get(url, headers=headers, params=params, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+
+    if "data" not in data or "quotes" not in data["data"]:
+        raise ValueError("Невірна відповідь від CoinMarketCap API")
+
+    quotes = data["data"]["quotes"]
+    df = pd.DataFrame([{
+        "ds": pd.to_datetime(item["timestamp"]),
+        "y": float(item["quote"]["USD"]["close"])
+    } for item in quotes])
+
     return df
 
 # --- Побудова графіку
@@ -94,7 +105,6 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif model_type in ["randomforest", "svr"]:
             X, y, features = prepare_features(df)
-
             scaler = StandardScaler()
             X_scaled = X.copy()
             X_scaled[["day", "month", "year", "dayofweek"]] = scaler.fit_transform(
@@ -107,7 +117,6 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 model = SVR(kernel='rbf')
 
             model.fit(X_scaled, y)
-
             last_row = df.iloc[-1:].copy()
             prev2 = df.iloc[-2]["y"]
 
@@ -120,34 +129,29 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "lag1": last_row["y"].values[0],
                     "lag2": prev2,
                 }
-
                 X_pred = pd.DataFrame([features_input])[features]
                 X_pred_scaled = X_pred.copy()
                 X_pred_scaled[["day", "month", "year", "dayofweek"]] = scaler.transform(
                     X_pred_scaled[["day", "month", "year", "dayofweek"]]
                 )
-
                 pred = model.predict(X_pred_scaled)[0]
                 predicted_values.append(pred)
                 next_date = last_row["ds"].values[0] + pd.Timedelta(days=1)
                 future_dates.append(next_date)
-
                 prev2 = last_row["y"].values[0]
                 last_row = pd.DataFrame({"ds": [next_date], "y": [pred]})
 
-            model_label = "RandomForest" if model_type == "randomforest" else "SVR"
+            model_label = "RandomForest" if model_type=="randomforest" else "SVR"
 
         else:
-            await update.message.reply_text("❗️Модель не розпізнано. Використай model=prophet, svr або randomforest.")
+            await update.message.reply_text("❗️Модель не розпізнано.")
             return
 
         plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
-
         text = (
             f"📊 Поточна ціна: ${now_price:.2f}\n"
             f"🔮 Прогноз ({model_label}): ${predicted_values[-1]:.2f}"
         )
-
         await update.message.reply_photo(photo=plot_buf, caption=text)
 
     except Exception as e:
