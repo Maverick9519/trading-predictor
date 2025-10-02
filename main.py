@@ -13,20 +13,20 @@ from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
 from prophet import Prophet
 
-# --- Налаштування
+# --- Логування
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-# --- Telegram token та webhook URL
+# --- Налаштування
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # наприклад: https://yourapp.onrender.com
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # https://yourapp.onrender.com
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# --- Flask додаток
+# --- Flask
 flask_app = Flask(__name__)
 
-# --- Завантаження історичних даних з Binance
+# --- Завантаження даних з Binance
 def fetch_historical_data():
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 200}
@@ -72,7 +72,7 @@ def prepare_features(df):
     features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
     return df[features], df["y"], features
 
-# --- Команди бота
+# --- Команди
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я крипто-прогнозатор 📈\n"
@@ -93,8 +93,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         df = fetch_historical_data()
         now_price = df["y"].iloc[-1]
-        predicted_values = []
-        future_dates = []
+        predicted_values, future_dates = [], []
 
         if model_type == "prophet":
             model = Prophet()
@@ -159,31 +158,30 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("❌ Помилка прогнозу")
         await update.message.reply_text(f"❌ Помилка: {e}")
 
+# --- Application
+application = Application.builder().token(TELEGRAM_TOKEN).build()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("predict", predict))
+
 # --- Flask route для webhook
 @flask_app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     data = request.get_json(force=True)
     update = Update.de_json(data, bot)
-    asyncio.create_task(application.update_queue.put(update))
+    asyncio.run(application.process_update(update))
     return "ok", 200
 
-# --- Flask route для тесту
-@flask_app.route('/')
+# --- Flask route для перевірки
+@flask_app.route("/")
 def index():
     return "✅ Бот працює!"
 
-# --- Telegram Application
-application = Application.builder().token(TELEGRAM_TOKEN).build()
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("predict", predict))
-
-# --- Запуск webhook на Render
-if __name__ == '__main__':
-    # Встановлюємо webhook
+# --- Головний запуск
+if __name__ == "__main__":
     async def set_webhook():
         await bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}")
         logging.info("✅ Webhook встановлено")
 
     asyncio.run(set_webhook())
-    port = int(os.environ.get("PORT", 4000))
+    port = int(os.environ.get("PORT", 5000))
     flask_app.run(host="0.0.0.0", port=port)
