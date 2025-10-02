@@ -3,8 +3,9 @@ import threading
 import logging
 import asyncio
 import requests
-import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")  # важливо для серверів без GUI
 import matplotlib.pyplot as plt
 from io import BytesIO
 from flask import Flask
@@ -18,29 +19,30 @@ from prophet import Prophet
 # --- Налаштування
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
-# --- Завантаження історичних даних
+
+# --- Завантаження історичних даних з Binance
 def fetch_historical_data():
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 100}
     response = requests.get(url, params=params)
     response.raise_for_status()
     raw_data = response.json()
-    df = pd.DataFrame(raw_data, columns=[ "timestamp", "open", "high", "low", "close","volume",
-    "close_time", "quote_asset_volume", "num_trades",
-    "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
-])
-df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
-df["close"] = df["close"].astype(float)
-df = df[["timestamp", "close"]]
-df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
-return df
+    df = pd.DataFrame(raw_data, columns=[
+        "timestamp", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "num_trades",
+        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
+    ])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
+    df["close"] = df["close"].astype(float)
+    df = df[["timestamp", "close"]]
+    df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
+    return df
 
 # --- Побудова графіку
 def plot_forecast(df, future_dates, predictions, model_name):
     plt.figure(figsize=(10, 5))
     plt.plot(df["ds"], df["y"], label="Історія")
-    plt.plot(future_dates, predictions, linestyle='--', marker='o',
-label="Прогноз")
+    plt.plot(future_dates, predictions, linestyle='--', marker='o', label="Прогноз")
     plt.xlabel("Дата")
     plt.ylabel("Ціна (USD)")
     plt.title(f"Bitcoin ({model_name} прогноз)")
@@ -53,6 +55,7 @@ label="Прогноз")
 
 # --- Побудова фіч
 def prepare_features(df):
+    df = df.copy()
     df["day"] = df["ds"].dt.day
     df["month"] = df["ds"].dt.month
     df["year"] = df["ds"].dt.year
@@ -62,6 +65,12 @@ def prepare_features(df):
     df = df.dropna()
     features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
     return df[features], df["y"], features
+
+# --- Команда /predict
+async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        model_type = "prophet"
+        days = 3
 
         if context.args:
             for arg in context.args:
@@ -108,7 +117,7 @@ def prepare_features(df):
                 next_date = last_row["ds"].values[0] + pd.Timedelta(days=1)
                 future_dates.append(next_date)
                 last_row = pd.DataFrame({"ds": [next_date], "y": [pred]})
-                model_label = "RandomForest"
+            model_label = "RandomForest"
 
         elif model_type == "svr":
             X, y, features = prepare_features(df)
@@ -137,17 +146,16 @@ def prepare_features(df):
             model_label = "SVR"
 
         else:
-            await update.message.reply_text("❗️Модель не розпізнано. Використай model=prophet, svr або randomforest.")
-        return
-        
-        predicted_price = apply_human_factor(predicted_values[-1])
-        plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
+            await update.message.reply_text(
+                "❗️Модель не розпізнано. Використай model=prophet, svr або randomforest."
+            )
+            return
 
+        plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
         text = (
             f"📊 Поточна ціна: ${now_price:.2f}\n"
-            f"🔮 Прогноз ({model_label}): ${predicted_price:.2f}"
+            f"🔮 Прогноз ({model_label}, +{days} дн.): ${predicted_values[-1]:.2f}"
         )
-
         await update.message.reply_photo(photo=plot_buf, caption=text)
 
     except Exception as e:
@@ -156,7 +164,10 @@ def prepare_features(df):
 
 # --- Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text( "Привіт! Я крипто-прогнозатор 📈\n""Використай /predict model=prophet/randomforest/svr days=1..7\n" "Приклад: /predict model=svr days=3"
+    await update.message.reply_text(
+        "Привіт! Я крипто-прогнозатор 📈\n"
+        "Використай /predict model=prophet/randomforest/svr days=1..7\n"
+        "Приклад: /predict model=svr days=3"
     )
 
 # --- Flask keep-alive
@@ -180,5 +191,8 @@ async def run_bot():
 # --- Запуск
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 4000))
-    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port), daemon=True).start()
+    threading.Thread(
+        target=lambda: flask_app.run(host="0.0.0.0", port=port),
+        daemon=True
+    ).start()
     asyncio.run(run_bot())
