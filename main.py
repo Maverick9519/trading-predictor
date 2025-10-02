@@ -174,7 +174,9 @@ def webhook():
         return "bad request", 400
 
     try:
-        asyncio.run(application.process_update(update))
+        # Використовуємо поточний цикл asyncio для асинхронного оброблення
+        loop = asyncio.get_event_loop()
+        loop.create_task(application.process_update(update))
     except Exception:
         logger.exception("❌ Помилка у webhook")
         return "error", 500
