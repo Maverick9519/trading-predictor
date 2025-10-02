@@ -1,12 +1,14 @@
 services:
   - type: web
-    name: crypto-bot
+    name: trading-predictor
     env: python
     plan: free
     buildCommand: ""
     startCommand: python main.py
     envVars:
       - key: TELEGRAM_TOKEN
-        sync: false
+        sync: false   # ставиш свій токен у Render Dashboard
       - key: COINMARKETCAP_API_KEY
-        sync: false
+        sync: false   # ставиш API ключ у Render Dashboard
+      - key: WEBHOOK_URL
+        value: https://trading-predictor.onrender.com
