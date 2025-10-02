@@ -183,7 +183,7 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 loop.run_until_complete(application.initialize())
 # Встановлюємо webhook
-loop.run_until_complete(bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"))
+loop.run_until_complete(bot.set_webhook(f"{https://trading-predictor.onrender.com}/webhook/{TELEGRAM_TOKEN}"))
 logger.info("Webhook встановлено!")
 
 if __name__ == "__main__":
