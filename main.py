@@ -26,11 +26,9 @@ CMC_KEY = os.environ.get("COINMARKETCAP_API_KEY")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 if not TELEGRAM_TOKEN or not CMC_KEY or not WEBHOOK_URL:
-    raise RuntimeError("❌ Перевір, що TELEGRAM_TOKEN, COINMARKETCAP_API_KEY і WEBHOOK_URL задані в Render.")
+    raise RuntimeError("❌ TELEGRAM_TOKEN, COINMARKETCAP_API_KEY або WEBHOOK_URL не задані.")
 
 bot = Bot(token=TELEGRAM_TOKEN)
-
-# --- Flask
 app = Flask(__name__)
 
 # --- Дані з CoinMarketCap
@@ -160,6 +158,12 @@ application = Application.builder().token(TELEGRAM_TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("predict", predict))
 
+# --- Запуск асинхронного Application у фоновому циклі
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+loop.run_until_complete(application.initialize())
+loop.create_task(application.start())
+
 # --- Flask маршрути
 @app.route("/")
 def index():
@@ -169,19 +173,11 @@ def index():
 def webhook():
     try:
         update = Update.de_json(request.get_json(force=True), bot)
-    except Exception:
-        logger.exception("❌ Не вдалось розпарсити update")
-        return "bad request", 400
-
-    try:
-        # Використовуємо поточний цикл asyncio для асинхронного оброблення
-        loop = asyncio.get_event_loop()
-        loop.create_task(application.process_update(update))
-    except Exception:
+        loop.create_task(application.update_queue.put(update))
+        return "ok", 200
+    except Exception as e:
         logger.exception("❌ Помилка у webhook")
         return "error", 500
-
-    return "ok", 200
 
 # --- Додатковий маршрут для тесту POST
 @app.route("/bot", methods=["POST"])
@@ -192,10 +188,10 @@ def test_bot():
     message = data["message"]
     return jsonify({"reply": f"Ви написали: {message}"}), 200
 
-# --- Запуск
+# --- Запуск Flask
 if __name__ == "__main__":
     logger.info("Встановлюю webhook...")
-    asyncio.run(bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"))
+    loop.run_until_complete(bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"))
     logger.info("Webhook встановлено!")
 
     port = int(os.environ.get("PORT", 5000))
