@@ -1,33 +1,23 @@
 import os
 import logging
-import asyncio
 import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 from io import BytesIO
-from flask import Flask, request
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
 from prophet import Prophet
 
-# ---------------- Логи ----------------
+# --- Налаштування
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-# ---------------- Налаштування ----------------
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # https://yourapp.onrender.com
 
-if not TELEGRAM_TOKEN or not WEBHOOK_URL:
-    raise RuntimeError("❌ TELEGRAM_TOKEN або WEBHOOK_URL не задані у змінних середовища")
-
-bot = Bot(token=TELEGRAM_TOKEN)
-flask_app = Flask(__name__)
-
-# ---------------- Дані Binance ----------------
+# --- Завантаження історичних даних з Binance
 def fetch_historical_data():
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 200}
@@ -39,13 +29,13 @@ def fetch_historical_data():
         "close_time", "quote_asset_volume", "num_trades",
         "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
     ])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
     df["close"] = df["close"].astype(float)
     df = df[["timestamp", "close"]]
     df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
     return df
 
-# ---------------- Побудова графіку ----------------
+# --- Побудова графіку
 def plot_forecast(df, future_dates, predictions, model_name):
     plt.figure(figsize=(12, 6))
     plt.plot(df["ds"], df["y"], label="Історія", color="#2563eb", linewidth=2)
@@ -57,11 +47,11 @@ def plot_forecast(df, future_dates, predictions, model_name):
     plt.grid(True, linestyle="--", alpha=0.3)
     plt.tight_layout()
     buf = BytesIO()
-    plt.savefig(buf, format="png")
+    plt.savefig(buf, format='png')
     buf.seek(0)
     return buf
 
-# ---------------- Фічі ----------------
+# --- Побудова фіч
 def prepare_features(df):
     df["day"] = df["ds"].dt.day
     df["month"] = df["ds"].dt.month
@@ -73,7 +63,7 @@ def prepare_features(df):
     features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
     return df[features], df["y"], features
 
-# ---------------- Команди ----------------
+# --- Команди бота
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я крипто-прогнозатор 📈\n"
@@ -94,7 +84,8 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         df = fetch_historical_data()
         now_price = df["y"].iloc[-1]
-        predicted_values, future_dates = [], []
+        predicted_values = []
+        future_dates = []
 
         if model_type == "prophet":
             model = Prophet()
@@ -116,7 +107,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if model_type == "randomforest":
                 model = RandomForestRegressor(n_estimators=200, random_state=42)
             else:
-                model = SVR(kernel="rbf")
+                model = SVR(kernel='rbf')
 
             model.fit(X_scaled, y)
 
@@ -148,7 +139,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             model_label = "RandomForest" if model_type == "randomforest" else "SVR"
 
         else:
-            await update.message.reply_text("❗️Невідома модель. Використай model=prophet, svr або randomforest.")
+            await update.message.reply_text("❗️Модель не розпізнано. Використай model=prophet, svr або randomforest.")
             return
 
         plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
@@ -156,34 +147,15 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_photo(photo=plot_buf, caption=text)
 
     except Exception as e:
-        logger.exception("❌ Помилка прогнозу")
+        logging.exception("❌ Помилка прогнозу")
         await update.message.reply_text(f"❌ Помилка: {e}")
 
-# ---------------- Application ----------------
-application = Application.builder().token(TELEGRAM_TOKEN).build()
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("predict", predict))
+# --- Запуск бота (polling)
+def main():
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("predict", predict))
+    application.run_polling()
 
-# ---------------- Flask ----------------
-@flask_app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
-def webhook():
-    data = request.get_json(force=True)
-    update = Update.de_json(data, bot)
-    asyncio.run(application.process_update(update))
-    return "ok", 200
-
-@flask_app.route("/")
-def index():
-    return "✅ Бот працює на Render!"
-
-# ---------------- Main ----------------
-if __name__ == "__main__":
-    async def set_webhook():
-        url = f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"
-        await bot.set_webhook(url, drop_pending_updates=True)
-        logger.info(f"✅ Webhook встановлено: {url}")
-
-    asyncio.run(set_webhook())
-
-    port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host="0.0.0.0", port=port)
+if __name__ == '__main__':
+    main()
