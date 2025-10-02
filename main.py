@@ -7,7 +7,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from io import BytesIO
-from flask import Flask, request, jsonify
+from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 from sklearn.ensemble import RandomForestRegressor
@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 # --- Змінні середовища
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-
 if not TELEGRAM_TOKEN or not WEBHOOK_URL:
     raise RuntimeError("❌ TELEGRAM_TOKEN або WEBHOOK_URL не задані.")
 
@@ -60,6 +59,7 @@ def plot_forecast(df, future_dates, predictions, model_name):
     buf = BytesIO()
     plt.savefig(buf, format='png')
     buf.seek(0)
+    plt.close()
     return buf
 
 # --- Фічі для ML
@@ -172,16 +172,20 @@ def webhook():
     try:
         update = Update.de_json(request.get_json(force=True), bot)
         logger.info(f"Отримано update: {update}")
-        asyncio.get_event_loop().create_task(application.update_queue.put(update))
+        loop.create_task(application.update_queue.put(update))
         return "ok", 200
     except Exception as e:
         logger.exception("❌ Помилка у webhook")
         return "error", 500
 
-# --- Запуск Flask + webhook
+# --- Event loop і запуск webhook
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+loop.run_until_complete(application.initialize())
+# Встановлюємо webhook
+loop.run_until_complete(bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"))
+logger.info("Webhook встановлено!")
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    logger.info(f"Встановлюю webhook на {WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}")
-    asyncio.run(bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"))
-    logger.info("Webhook встановлено!")
     app.run(host="0.0.0.0", port=port)
