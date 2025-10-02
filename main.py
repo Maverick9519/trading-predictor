@@ -3,7 +3,6 @@ import threading
 import logging
 import asyncio
 import requests
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from io import BytesIO
@@ -14,38 +13,40 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
 from prophet import Prophet
+from datetime import datetime, timedelta
 
 # --- Налаштування
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-CMC_KEY = os.environ.get("COINMARKETCAP_API_KEY")
-if not CMC_KEY:
-    raise RuntimeError("❌ Не заданий COINMARKETCAP_API_KEY")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY")
+if not TELEGRAM_TOKEN or not COINMARKETCAP_API_KEY:
+    raise RuntimeError("❌ TELEGRAM_TOKEN або COINMARKETCAP_API_KEY не задані!")
 
-# --- Завантаження історичних даних через CoinMarketCap
+# --- Завантаження історичних даних з CoinMarketCap
 def fetch_historical_data():
-    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical"
+    end = datetime.utcnow()
+    start = end - timedelta(days=200)
+
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
     params = {
         "symbol": "BTC",
         "convert": "USD",
-        "interval": "daily",
-        "count": 200  # останні 200 днів
+        "time_start": int(start.timestamp()),
+        "time_end": int(end.timestamp()),
     }
-    headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-    resp = requests.get(url, headers=headers, params=params, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
+    headers = {"X-CMC_PRO_API_KEY": COINMARKETCAP_API_KEY}
 
-    if "data" not in data or "quotes" not in data["data"]:
-        raise ValueError("Невірна відповідь від CoinMarketCap API")
+    response = requests.get(url, params=params, headers=headers)
+    response.raise_for_status()
+    data = response.json()
 
     quotes = data["data"]["quotes"]
-    df = pd.DataFrame([{
-        "ds": pd.to_datetime(item["timestamp"]),
-        "y": float(item["quote"]["USD"]["close"])
-    } for item in quotes])
-
+    df = pd.DataFrame([
+        {"ds": datetime.fromtimestamp(q["time_open"]), "y": q["quote"]["USD"]["close"]}
+        for q in quotes
+    ])
     return df
 
 # --- Побудова графіку
@@ -105,18 +106,16 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif model_type in ["randomforest", "svr"]:
             X, y, features = prepare_features(df)
+
             scaler = StandardScaler()
             X_scaled = X.copy()
             X_scaled[["day", "month", "year", "dayofweek"]] = scaler.fit_transform(
                 X_scaled[["day", "month", "year", "dayofweek"]]
             )
 
-            if model_type == "randomforest":
-                model = RandomForestRegressor(n_estimators=200, random_state=42)
-            else:
-                model = SVR(kernel='rbf')
-
+            model = RandomForestRegressor(n_estimators=200, random_state=42) if model_type == "randomforest" else SVR(kernel='rbf')
             model.fit(X_scaled, y)
+
             last_row = df.iloc[-1:].copy()
             prev2 = df.iloc[-2]["y"]
 
@@ -129,29 +128,30 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "lag1": last_row["y"].values[0],
                     "lag2": prev2,
                 }
+
                 X_pred = pd.DataFrame([features_input])[features]
                 X_pred_scaled = X_pred.copy()
                 X_pred_scaled[["day", "month", "year", "dayofweek"]] = scaler.transform(
                     X_pred_scaled[["day", "month", "year", "dayofweek"]]
                 )
+
                 pred = model.predict(X_pred_scaled)[0]
                 predicted_values.append(pred)
                 next_date = last_row["ds"].values[0] + pd.Timedelta(days=1)
                 future_dates.append(next_date)
+
                 prev2 = last_row["y"].values[0]
                 last_row = pd.DataFrame({"ds": [next_date], "y": [pred]})
 
-            model_label = "RandomForest" if model_type=="randomforest" else "SVR"
+            model_label = "RandomForest" if model_type == "randomforest" else "SVR"
 
         else:
-            await update.message.reply_text("❗️Модель не розпізнано.")
+            await update.message.reply_text("❗️Модель не розпізнано. Використай model=prophet, svr або randomforest.")
             return
 
         plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
-        text = (
-            f"📊 Поточна ціна: ${now_price:.2f}\n"
-            f"🔮 Прогноз ({model_label}): ${predicted_values[-1]:.2f}"
-        )
+
+        text = f"📊 Поточна ціна: ${now_price:.2f}\n🔮 Прогноз ({model_label}): ${predicted_values[-1]:.2f}"
         await update.message.reply_photo(photo=plot_buf, caption=text)
 
     except Exception as e:
@@ -172,8 +172,7 @@ flask_app = Flask(__name__)
 def index():
     return "✅ Бот працює!"
 
-# --- Telegram запуск
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+# --- Telegram запуск через Application
 async def run_bot():
     logging.info("🚀 Бот запускається...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -181,8 +180,7 @@ async def run_bot():
     app.add_handler(CommandHandler("predict", predict))
     await app.initialize()
     await app.start()
-    await app.updater.start_polling()
-    await asyncio.Event().wait()
+    await asyncio.Event().wait()  # щоб не закривався
 
 # --- Запуск
 if __name__ == '__main__':
