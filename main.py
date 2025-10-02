@@ -1,37 +1,39 @@
 # main.py
 import os
-import threading
 import logging
-import asyncio
 import requests
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")  # для серверів без дисплея
+matplotlib.use("Agg")  # для рендеру без дисплея
 import matplotlib.pyplot as plt
 from io import BytesIO
 from flask import Flask, request
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
 from prophet import Prophet
+import asyncio
 
-# --- Налаштування
+# --- Логи
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- Змінні середовища
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CMC_KEY = os.environ.get("COINMARKETCAP_API_KEY")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # твій Render URL
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 if not TELEGRAM_TOKEN or not CMC_KEY or not WEBHOOK_URL:
-    raise RuntimeError("❌ Немає TELEGRAM_TOKEN або CMC_KEY або WEBHOOK_URL у env vars")
+    raise RuntimeError("❌ Перевір, що TELEGRAM_TOKEN, COINMARKETCAP_API_KEY і WEBHOOK_URL задані в Render.")
 
-# --- Flask app
-flask_app = Flask(__name__)
+bot = Bot(token=TELEGRAM_TOKEN)
 
-# --- Отримання історичних даних з CoinMarketCap
+# --- Flask
+app = Flask(__name__)
+
+# --- Дані з CoinMarketCap
 def fetch_historical_data():
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical"
     params = {
@@ -44,8 +46,10 @@ def fetch_historical_data():
     resp = requests.get(url, headers=headers, params=params, timeout=15)
     resp.raise_for_status()
     data = resp.json()
+
     if "data" not in data or "quotes" not in data["data"]:
-        raise ValueError("❌ Невірна відповідь від CoinMarketCap API")
+        raise ValueError("Невірна відповідь від CoinMarketCap API")
+
     raw = data["data"]["quotes"]
     df = pd.DataFrame([{
         "ds": pd.to_datetime(item["timestamp"]),
@@ -55,20 +59,21 @@ def fetch_historical_data():
 
 # --- Побудова графіку
 def plot_forecast(df, future_dates, predictions, model_name):
-    plt.figure(figsize=(10, 5))
-    plt.plot(df["ds"], df["y"], label="Історія")
-    plt.plot(future_dates, predictions, linestyle='--', marker='o', label="Прогноз")
+    plt.figure(figsize=(12, 6))
+    plt.plot(df["ds"], df["y"], label="Історія", linewidth=2, color="blue")
+    plt.plot(future_dates, predictions, label="Прогноз", linewidth=2, linestyle="--", color="green")
     plt.xlabel("Дата")
     plt.ylabel("Ціна (USD)")
     plt.title(f"Bitcoin ({model_name} прогноз)")
     plt.legend()
-    plt.tight_layout()
+    plt.grid(True, linestyle="--", alpha=0.3)
     buf = BytesIO()
     plt.savefig(buf, format='png')
+    plt.close()
     buf.seek(0)
     return buf
 
-# --- Побудова фіч
+# --- Фічі для ML
 def prepare_features(df):
     df = df.copy()
     df["day"] = df["ds"].dt.day
@@ -81,7 +86,7 @@ def prepare_features(df):
     features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
     return df[features], df["y"], features
 
-# --- /start
+# --- Telegram команди
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я крипто-прогнозатор 📈\n"
@@ -89,7 +94,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Приклад: /predict model=svr days=3"
     )
 
-# --- /predict
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         model_type = "prophet"
@@ -117,13 +121,11 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif model_type in ("randomforest", "svr"):
             X, y, features = prepare_features(df)
             scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            if model_type == "randomforest":
-                model = RandomForestRegressor(n_estimators=200, random_state=42)
-                model_label = "RandomForest"
-            else:
-                model = SVR(kernel="rbf")
-                model_label = "SVR"
+            X_scaled = X.copy()
+            X_scaled[["day", "month", "year", "dayofweek"]] = scaler.fit_transform(
+                X_scaled[["day", "month", "year", "dayofweek"]]
+            )
+            model = RandomForestRegressor(n_estimators=200, random_state=42) if model_type == "randomforest" else SVR(kernel="rbf")
             model.fit(X_scaled, y)
 
             last_row = df.iloc[-1:].copy()
@@ -135,30 +137,31 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "year": last_row["ds"].dt.year.values[0],
                     "dayofweek": last_row["ds"].dt.dayofweek.values[0],
                     "lag1": last_row["y"].values[0],
-                    "lag2": prev2
+                    "lag2": prev2,
                 }
                 X_pred = pd.DataFrame([features_input])[features]
-                X_pred_scaled = scaler.transform(X_pred)
+                X_pred_scaled = X_pred.copy()
+                X_pred_scaled[["day", "month", "year", "dayofweek"]] = scaler.transform(
+                    X_pred_scaled[["day", "month", "year", "dayofweek"]]
+                )
                 pred = model.predict(X_pred_scaled)[0]
                 predicted_values.append(pred)
-                next_date = last_row["ds"].values[0] + pd.Timedelta(days=1)
+                next_date = pd.to_datetime(last_row["ds"].values[0]) + pd.Timedelta(days=1)
                 future_dates.append(next_date)
                 prev2 = last_row["y"].values[0]
                 last_row = pd.DataFrame({"ds": [next_date], "y": [pred]})
+            model_label = "RandomForest" if model_type == "randomforest" else "SVR"
 
         else:
             await update.message.reply_text("❗️Модель не розпізнано. Використай model=prophet, svr або randomforest.")
             return
 
         plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
-        text = (
-            f"📊 Поточна ціна: ${now_price:.2f}\n"
-            f"🔮 Прогноз ({model_label}, +{days} дн.): ${predicted_values[-1]:.2f}"
-        )
+        text = f"📊 Поточна ціна: ${now_price:.2f}\n🔮 Прогноз ({model_label}, +{days} дн.): ${predicted_values[-1]:.2f}"
         await update.message.reply_photo(photo=plot_buf, caption=text)
 
     except Exception as e:
-        logger.exception("❌ Помилка у /predict")
+        logger.exception("Помилка у /predict")
         await update.message.reply_text(f"❌ Помилка: {e}")
 
 # --- Application
@@ -166,30 +169,32 @@ application = Application.builder().token(TELEGRAM_TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("predict", predict))
 
-# --- Flask routes
-@flask_app.route("/")
+# --- Flask маршрути
+@app.route("/")
 def index():
     return "✅ Бот працює!"
 
-@flask_app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
+@app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     try:
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        asyncio.get_event_loop().create_task(application.process_update(update))
-    except Exception as e:
+        update = Update.de_json(request.get_json(force=True), bot)
+    except Exception:
+        logger.exception("❌ Не вдалось розпарсити update")
+        return "bad request", 400
+
+    try:
+        asyncio.run(application.process_update(update))
+    except Exception:
         logger.exception("❌ Помилка у webhook")
         return "error", 500
+
     return "ok", 200
 
 # --- Запуск
 if __name__ == "__main__":
+    logger.info("Встановлюю webhook...")
+    asyncio.run(bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"))
+    logger.info("Webhook встановлено!")
+
     port = int(os.environ.get("PORT", 5000))
-
-    async def run():
-        await application.initialize()
-        await application.start()
-        await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}")
-        logger.info("🌍 Webhook встановлено!")
-
-    asyncio.get_event_loop().run_until_complete(run())
-    flask_app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port)
