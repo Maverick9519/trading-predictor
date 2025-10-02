@@ -13,20 +13,18 @@ from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
 from prophet import Prophet
 
-# --- Логування
+# ---------------- Налаштування ----------------
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 logging.basicConfig(level=logging.INFO)
 
-# --- Налаштування
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # https://yourapp.onrender.com
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# --- Flask
 flask_app = Flask(__name__)
 
-# --- Завантаження даних з Binance
+# ---------------- Завантаження даних ----------------
 def fetch_historical_data():
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "1d", "limit": 200}
@@ -44,7 +42,7 @@ def fetch_historical_data():
     df.rename(columns={"timestamp": "ds", "close": "y"}, inplace=True)
     return df
 
-# --- Побудова графіку
+# ---------------- Графік ----------------
 def plot_forecast(df, future_dates, predictions, model_name):
     plt.figure(figsize=(12, 6))
     plt.plot(df["ds"], df["y"], label="Історія", color="#2563eb", linewidth=2)
@@ -60,7 +58,7 @@ def plot_forecast(df, future_dates, predictions, model_name):
     buf.seek(0)
     return buf
 
-# --- Побудова фіч
+# ---------------- Фічі ----------------
 def prepare_features(df):
     df["day"] = df["ds"].dt.day
     df["month"] = df["ds"].dt.month
@@ -72,7 +70,7 @@ def prepare_features(df):
     features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
     return df[features], df["y"], features
 
-# --- Команди
+# ---------------- Команди ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я крипто-прогнозатор 📈\n"
@@ -158,12 +156,12 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("❌ Помилка прогнозу")
         await update.message.reply_text(f"❌ Помилка: {e}")
 
-# --- Application
+# ---------------- Application ----------------
 application = Application.builder().token(TELEGRAM_TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("predict", predict))
 
-# --- Flask route для webhook
+# ---------------- Flask маршрути ----------------
 @flask_app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     data = request.get_json(force=True)
@@ -171,17 +169,17 @@ def webhook():
     asyncio.run(application.process_update(update))
     return "ok", 200
 
-# --- Flask route для перевірки
 @flask_app.route("/")
 def index():
     return "✅ Бот працює!"
 
-# --- Головний запуск
+# ---------------- Запуск ----------------
 if __name__ == "__main__":
     async def set_webhook():
-        await bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}")
-        logging.info("✅ Webhook встановлено")
+        url = f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"
+        await bot.set_webhook(url)
+        logging.info(f"✅ Webhook встановлено: {url}")
 
     asyncio.run(set_webhook())
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port)
