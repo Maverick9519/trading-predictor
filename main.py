@@ -4,10 +4,10 @@ import logging
 import requests
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")  # для рендеру без дисплея
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from io import BytesIO
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 from sklearn.ensemble import RandomForestRegressor
@@ -36,25 +36,16 @@ app = Flask(__name__)
 # --- Дані з CoinMarketCap
 def fetch_historical_data():
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical"
-    params = {
-        "symbol": "BTC",
-        "convert": "USD",
-        "interval": "daily",
-        "count": 200
-    }
+    params = {"symbol": "BTC", "convert": "USD", "interval": "daily", "count": 200}
     headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
     resp = requests.get(url, headers=headers, params=params, timeout=15)
     resp.raise_for_status()
     data = resp.json()
-
     if "data" not in data or "quotes" not in data["data"]:
         raise ValueError("Невірна відповідь від CoinMarketCap API")
-
     raw = data["data"]["quotes"]
-    df = pd.DataFrame([{
-        "ds": pd.to_datetime(item["timestamp"]),
-        "y": float(item["quote"]["USD"]["close"])
-    } for item in raw])
+    df = pd.DataFrame([{"ds": pd.to_datetime(item["timestamp"]),
+                        "y": float(item["quote"]["USD"]["close"])} for item in raw])
     return df
 
 # --- Побудова графіку
@@ -189,6 +180,15 @@ def webhook():
         return "error", 500
 
     return "ok", 200
+
+# --- Додатковий маршрут для тесту POST
+@app.route("/bot", methods=["POST"])
+def test_bot():
+    data = request.json
+    if not data or "message" not in data:
+        return jsonify({"error": "Немає 'message' в запиті"}), 400
+    message = data["message"]
+    return jsonify({"reply": f"Ви написали: {message}"}), 200
 
 # --- Запуск
 if __name__ == "__main__":
