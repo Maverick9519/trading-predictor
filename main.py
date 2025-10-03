@@ -19,7 +19,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 # --- Завантаження історичних даних з CoinGecko
 def fetch_historical_data():
-    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+    url = "https://api.binance.com/api/v3/klines"
     params = {"vs_currency": "usd", "days": "200"}  # останні 200 днів
     resp = requests.get(url, params=params)
     resp.raise_for_status()
