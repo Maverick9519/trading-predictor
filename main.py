@@ -34,8 +34,8 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CMC_API_KEY = os.getenv("CMC_API_KEY")
+TELEGRAM_TOKEN = os.getenv("8257584771:AAHqw_h4x0wMhZS1reYfaUZ_6JBqhxorKIY")
+CMC_API_KEY = os.getenv("261f46a1-152f-4002-8b38-85910b6f5514")
 
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
