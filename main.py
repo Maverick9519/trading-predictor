@@ -152,10 +152,14 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= WEBHOOK =================
 async def webhook(request):
-    logging.info("🔔 Webhook received request")
-    data = await request.json()
-    update = Update.de_json(data, app.bot)
-    await app.update_queue.put(update)
+    logging.info("🔔 Webhook request received")
+    try:
+        data = await request.json()
+        logging.info("Payload: %s", data)
+        update = Update.de_json(data, app.bot)
+        await app.update_queue.put(update)
+    except Exception as e:
+        logging.error("Webhook error: %s", e)
     return web.Response(text="ok")
 
 # ================= MAIN =================
@@ -179,7 +183,9 @@ def main():
     # Запускаємо aiohttp сервер
     web_app = web.Application()
     web_app.router.add_post("/webhook", webhook)
-    web.run_app(web_app, port=int(os.environ.get("PORT", 10000)))
+    port = int(os.environ.get("PORT", 10000))
+    logging.info(f"🚀 Starting server on port {port}")
+    web.run_app(web_app, port=port)
 
 if __name__ == "__main__":
     main()
