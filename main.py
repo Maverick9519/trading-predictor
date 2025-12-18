@@ -23,7 +23,7 @@ import time
 import requests
 
 # === Telegram Token ===
-TELEGRAM_TOKEN = '7632093001:AAFoVS1sj36cARryQHyycdArufnv3Ci7wWE'
+TELEGRAM_TOKEN = '8257584771:AAHqw_h4x0wMhZS1reYfaUZ_6JBqhxorKIY'
 
 # === Файли ===
 MODEL_FILE = "user_models.json"
