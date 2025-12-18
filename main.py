@@ -1,157 +1,220 @@
-import os
-import logging
-import requests
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-from io import BytesIO
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
 from sklearn.svm import SVR
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler
-from prophet import Prophet
+from sklearn.compose import TransformedTargetRegressor
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
+import logging
+import io
+import json
+import os
+import datetime
+import time
+import requests
 
-# --- Налаштування
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-logging.basicConfig(level=logging.INFO)
+# === Telegram Token ===
+TELEGRAM_TOKEN = '7632093001:AAGojU_FXYAWGfKTZAk3w7fuOhLxKoXdi6Y'
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+# === Файли ===
+MODEL_FILE = "user_models.json"
+LOG_FILE = "prediction_log.csv"
 
-# --- Завантаження історичних даних з CoinGecko
-def fetch_historical_data():
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"vs_currency": "usd", "days": "200"}  # останні 200 днів
-    resp = requests.get(url, params=params)
-    resp.raise_for_status()
-    data = resp.json()
+# === Логування ===
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-    prices = data["prices"]  # список [timestamp, price]
-    df = pd.DataFrame(prices, columns=["timestamp", "y"])
-    df["ds"] = pd.to_datetime(df["timestamp"], unit="ms")
-    df = df[["ds", "y"]]
-    return df
+# === Завантаження моделей ===
+def load_user_models():
+    if os.path.exists(MODEL_FILE):
+        with open(MODEL_FILE, 'r') as f:
+            return json.load(f)
+    return {}
 
-# --- Побудова графіку
-def plot_forecast(df, future_dates, predictions, model_name):
-    plt.figure(figsize=(12, 6))
-    plt.plot(df["ds"], df["y"], label="Історія", color="#2563eb", linewidth=2)
-    plt.plot(future_dates, predictions, label="Прогноз", color="#22c55e", linewidth=2, linestyle="--")
-    plt.xlabel("Дата")
-    plt.ylabel("Ціна (USD)")
-    plt.title(f"Bitcoin ({model_name} прогноз)")
+# === Збереження моделей ===
+def save_user_models(data):
+    with open(MODEL_FILE, 'w') as f:
+        json.dump(data, f)
+
+user_models = load_user_models()
+
+# === Логування прогнозів ===
+def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_prediction):
+    df_log = pd.DataFrame([{
+        "timestamp": datetime.datetime.now().isoformat(),
+        "user_id": user_id,
+        "model_type": model_type,
+        "mse": round(mse, 4),
+        "prediction_preview": list(np.round(predictions[:3], 2)),
+        "prediction_sum": round(total_prediction, 2),
+        "elapsed_time": round(elapsed_time, 2)
+    }])
+    if os.path.exists(LOG_FILE):
+        df_log.to_csv(LOG_FILE, mode='a', header=False, index=False)
+    else:
+        df_log.to_csv(LOG_FILE, mode='w', header=True, index=False)
+
+# === Завантаження крипто-даних ===
+def load_crypto_data():
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=100"
+    response = requests.get(url)
+    data = response.json()
+
+    prices = np.array([item[1] for item in data['prices']])
+    timestamps = [datetime.datetime.fromtimestamp(item[0] / 1000) for item in data['prices']]
+    df = pd.DataFrame({'Date': timestamps, 'Price': prices})
+
+    df['Moving_Avg_10'] = df['Price'].rolling(window=10).mean()
+    df['Moving_Avg_50'] = df['Price'].rolling(window=50).mean()
+    df['Volatility'] = df['Price'].pct_change().rolling(window=10).std()
+
+    delta = df['Price'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+
+    df['Target'] = df['Price'].shift(-1)
+    return df.dropna()
+
+# === Тренування моделі ===
+def train_model(df, model_type='LinearRegression'):
+    features = ['Price', 'Moving_Avg_10', 'Moving_Avg_50', 'Volatility', 'RSI']
+    X = df[features]
+    y = df['Target']
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, shuffle=False, test_size=0.2)
+
+    if model_type == 'SVR':
+        base_model = SVR()
+    elif model_type == 'RandomForest':
+        base_model = RandomForestRegressor(n_estimators=100)
+    else:
+        base_model = LinearRegression()
+
+    model = TransformedTargetRegressor(regressor=base_model, transformer=StandardScaler())
+    model.fit(X_train, y_train)
+    predictions = model.predict(X_test)
+    mse = mean_squared_error(y_test, predictions)
+
+    # Виправлено тут: використовуємо .loc замість .iloc
+    return model, df.loc[y_test.index], y_test, predictions, mse
+
+# === Побудова графіка ===
+def plot_prediction(df_test, y_test, predictions):
+    plt.figure(figsize=(10, 5))
+    plt.plot(df_test['Date'], y_test.values, label='Real')
+    plt.plot(df_test['Date'], predictions, label='Predicted')
     plt.legend()
-    plt.grid(True, linestyle="--", alpha=0.3)
-    plt.tight_layout()
-    buf = BytesIO()
+    plt.title("Crypto Price Prediction")
+    plt.xlabel("Date")
+    plt.ylabel("Price")
+    plt.xticks(rotation=45)
+    buf = io.BytesIO()
     plt.savefig(buf, format='png')
     buf.seek(0)
+    plt.close()
     return buf
 
-# --- Побудова фіч
-def prepare_features(df):
-    df["day"] = df["ds"].dt.day
-    df["month"] = df["ds"].dt.month
-    df["year"] = df["ds"].dt.year
-    df["dayofweek"] = df["ds"].dt.dayofweek
-    df["lag1"] = df["y"].shift(1)
-    df["lag2"] = df["y"].shift(2)
-    df = df.dropna()
-    features = ["day", "month", "year", "dayofweek", "lag1", "lag2"]
-    return df[features], df["y"], features
+# === Прогнозування та графік ===
+def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymous'):
+    start_time = time.time()
+    df = load_crypto_data()
+    model, df_test, y_test, predictions, mse = train_model(df, model_type)
+    plot_buf = plot_prediction(df_test, y_test, predictions)
+    elapsed_time = time.time() - start_time
+    total_prediction = np.sum(predictions)
+    log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_prediction)
 
-# --- Команди бота
+    text = (
+        f"Модель: {model_type}\n"
+        f"Mean Squared Error: {mse:.2f}\n"
+        f"Сума прогнозу: {total_prediction:.2f}\n"
+        f"Час прогнозування: {elapsed_time:.2f} сек."
+    )
+    return text, plot_buf
+
+# === Telegram: /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привіт! Я крипто-прогнозатор 📈\n"
-        "Використай /predict model=prophet/randomforest/svr days=1..7\n"
-        "Приклад: /predict model=svr days=3"
+        "Привіт! Я трейдинг-прогнозатор бот.\n"
+        "Команди:\n"
+        "/predict — отримати прогноз\n"
+        "/model [LinearRegression|SVR|RandomForest] — обрати модель\n"
+        "/log — останні 5 прогнозів"
     )
 
+# === Telegram: /predict ===
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    model_type = user_models.get(user_id, 'LinearRegression')
+    await update.message.reply_text(f"Прогноз за моделлю: {model_type}...")
     try:
-        model_type = "prophet"
-        days = 3
-        if context.args:
-            for arg in context.args:
-                if arg.startswith("model="):
-                    model_type = arg.split("=")[1].lower()
-                elif arg.startswith("days="):
-                    days = int(arg.split("=")[1])
-
-        df = fetch_historical_data()
-        now_price = df["y"].iloc[-1]
-        predicted_values = []
-        future_dates = []
-
-        if model_type == "prophet":
-            model = Prophet()
-            model.fit(df)
-            future = model.make_future_dataframe(periods=days)
-            forecast = model.predict(future)
-            predicted_values = forecast.iloc[-days:]["yhat"].values
-            future_dates = forecast.iloc[-days:]["ds"].values
-            model_label = "Prophet"
-
-        elif model_type in ["randomforest", "svr"]:
-            X, y, features = prepare_features(df)
-            scaler = StandardScaler()
-            X_scaled = X.copy()
-            X_scaled[["day", "month", "year", "dayofweek"]] = scaler.fit_transform(
-                X_scaled[["day", "month", "year", "dayofweek"]]
-            )
-
-            if model_type == "randomforest":
-                model = RandomForestRegressor(n_estimators=200, random_state=42)
-            else:
-                model = SVR(kernel='rbf')
-
-            model.fit(X_scaled, y)
-
-            last_row = df.iloc[-1:].copy()
-            prev2 = df.iloc[-2]["y"]
-
-            for _ in range(days):
-                features_input = {
-                    "day": last_row["ds"].dt.day.values[0],
-                    "month": last_row["ds"].dt.month.values[0],
-                    "year": last_row["ds"].dt.year.values[0],
-                    "dayofweek": last_row["ds"].dt.dayofweek.values[0],
-                    "lag1": last_row["y"].values[0],
-                    "lag2": prev2,
-                }
-                X_pred = pd.DataFrame([features_input])[features]
-                X_pred_scaled = X_pred.copy()
-                X_pred_scaled[["day", "month", "year", "dayofweek"]] = scaler.transform(
-                    X_pred_scaled[["day", "month", "year", "dayofweek"]]
-                )
-
-                pred = model.predict(X_pred_scaled)[0]
-                predicted_values.append(pred)
-                next_date = last_row["ds"].values[0] + pd.Timedelta(days=1)
-                future_dates.append(next_date)
-                prev2 = last_row["y"].values[0]
-                last_row = pd.DataFrame({"ds": [next_date], "y": [pred]})
-
-            model_label = "RandomForest" if model_type == "randomforest" else "SVR"
-
-        else:
-            await update.message.reply_text("❗️Модель не розпізнано. Використай model=prophet, svr або randomforest.")
-            return
-
-        plot_buf = plot_forecast(df, future_dates, predicted_values, model_label)
-        text = f"📊 Поточна ціна: ${now_price:.2f}\n🔮 Прогноз ({model_label}): ${predicted_values[-1]:.2f}"
-        await update.message.reply_photo(photo=plot_buf, caption=text)
-
+        text, plot_buf = get_prediction_text_and_plot(model_type, user_id)
+        await update.message.reply_text(text)
+        await update.message.reply_photo(photo=plot_buf)
     except Exception as e:
-        logging.exception("❌ Помилка прогнозу")
-        await update.message.reply_text(f"❌ Помилка: {e}")
+        await update.message.reply_text("Виникла помилка під час прогнозування.")
+        logging.exception("Error during prediction")
 
-# --- Запуск бота (polling)
+# === Telegram: /model ===
+async def set_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if context.args:
+        model = context.args[0]
+        if model in ['LinearRegression', 'SVR', 'RandomForest']:
+            user_models[user_id] = model
+            save_user_models(user_models)
+            await update.message.reply_text(f"Модель встановлено: {model}")
+        else:
+            await update.message.reply_text("Доступні моделі: LinearRegression, SVR, RandomForest")
+    else:
+        await update.message.reply_text("Використання: /model LinearRegression")
+
+# === Telegram: /log ===
+async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if not os.path.exists(LOG_FILE):
+        await update.message.reply_text("Журнал прогнозів порожній.")
+        return
+    df = pd.read_csv(LOG_FILE)
+    df_user = df[df['user_id'] == user_id].tail(5)
+    if df_user.empty:
+        await update.message.reply_text("Для вас ще не збережено прогнозів.")
+        return
+    log_text = "Останні 5 прогнозів:\n"
+    for _, row in df_user.iterrows():
+        log_text += (
+            f"- {row['timestamp'][:19]}\n"
+            f"  Модель: {row['model_type']}, MSE: {row['mse']}, "
+            f"Сума: {row.get('prediction_sum', 'N/A')}, "
+            f"Час: {row.get('elapsed_time', 'N/A')} сек, "
+            f"Прогноз: {row['prediction_preview']}\n"
+        )
+    await update.message.reply_text(log_text)
+
+# === Запуск бота ===
 def main():
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("predict", predict))
-    application.run_polling()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("predict", predict))
+    app.add_handler(CommandHandler("model", set_model))
+    app.add_handler(CommandHandler("log", show_log))
+    print("Бот запущено...")
+    app.run_polling()
 
 if __name__ == '__main__':
     main()
