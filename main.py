@@ -27,12 +27,8 @@ import matplotlib.pyplot as plt
 
 # ===== TELEGRAM =====
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-    CallbackContext
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from aiohttp import web
 
 # ================= CONFIG =================
 load_dotenv()  # Для локального запуску через .env
@@ -44,10 +40,7 @@ APP_URL = os.getenv("APP_URL")  # https://твій_домен.onrender.com
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ================= STORAGE =================
 def load_user_models():
@@ -71,26 +64,17 @@ def load_crypto_data():
     try:
         r = requests.get(url, headers=headers, params=params, timeout=15)
         data = r.json()
-
         if "data" not in data:
             raise RuntimeError("CoinMarketCap API error: no 'data' in response")
-
         btc_data = next((item for item in data["data"] if item["symbol"] == "BTC"), None)
         if not btc_data:
             raise RuntimeError("CoinMarketCap API error: BTC not found")
-
-        df = pd.DataFrame([{
-            "Date": datetime.datetime.now(),
-            "Price": btc_data["quote"]["USD"]["price"]
-        }])
-
-        # Штучні історичні дані
+        df = pd.DataFrame([{"Date": datetime.datetime.now(), "Price": btc_data["quote"]["USD"]["price"]}])
         df = pd.concat([df]*100, ignore_index=True)
         df["MA10"] = df["Price"].rolling(10).mean()
         df["MA30"] = df["Price"].rolling(30).mean()
         df["Volatility"] = df["Price"].pct_change().rolling(10).std()
         df["Target"] = df["Price"].shift(-1)
-
         return df.dropna()
     except requests.RequestException as e:
         raise RuntimeError(f"CoinMarketCap API request failed: {str(e)}")
@@ -100,17 +84,13 @@ def train_model(df):
     features = ["Price", "MA10", "MA30", "Volatility"]
     X = df[features]
     y = df["Target"]
-
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, shuffle=False)
-
     model = TransformedTargetRegressor(regressor=LinearRegression(), transformer=StandardScaler())
     model.fit(X_train, y_train)
     predictions = model.predict(X_test)
     mse = mean_squared_error(y_test, predictions)
-
     return model, df.iloc[-len(y_test):], y_test, predictions, mse
 
 # ================= PLOT =================
@@ -121,7 +101,6 @@ def plot_prediction(df_test, y_test, predictions):
     plt.legend()
     plt.title("BTC Price Prediction (CoinMarketCap)")
     plt.xticks(rotation=45)
-
     buf = io.BytesIO()
     plt.tight_layout()
     plt.savefig(buf, format="png")
@@ -152,21 +131,12 @@ def make_prediction(user_id):
     elapsed = time.time() - start
     total = float(np.sum(predictions))
     log_prediction(user_id, mse, total, elapsed)
-
-    text = (
-        f"📈 BTC прогноз\n"
-        f"MSE: {mse:.2f}\n"
-        f"Сума прогнозу: {total:.2f}\n"
-        f"Час: {elapsed:.2f} сек"
-    )
+    text = f"📈 BTC прогноз\nMSE: {mse:.2f}\nСума прогнозу: {total:.2f}\nЧас: {elapsed:.2f} сек"
     return text, plot
 
 # ================= TELEGRAM HANDLERS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Crypto прогнозатор (CoinMarketCap)\n\n"
-        "/predict — отримати прогноз"
-    )
+    await update.message.reply_text("🤖 Crypto прогнозатор (CoinMarketCap)\n\n/predict — отримати прогноз")
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -180,25 +150,19 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("Prediction failed")
         await update.message.reply_text(f"❌ Помилка:\n{str(e)}")
 
-# ================= MAIN =================
-from aiohttp import web
-
+# ================= WEBHOOK =================
 async def webhook(request):
-    # Telegram POST
-    update = Update.de_json(await request.json(), app.bot)
+    logging.info("🔔 Webhook received request")
+    data = await request.json()
+    update = Update.de_json(data, app.bot)
     await app.update_queue.put(update)
     return web.Response(text="ok")
 
+# ================= MAIN =================
 def main():
     global app
-    if not TELEGRAM_TOKEN:
-        logging.error("❌ TELEGRAM_TOKEN не встановлено!")
-        return
-    if not CMC_API_KEY:
-        logging.error("❌ CMC_API_KEY не встановлено!")
-        return
-    if not APP_URL:
-        logging.error("❌ APP_URL не встановлено! Вкажи свій Render URL")
+    if not TELEGRAM_TOKEN or not CMC_API_KEY or not APP_URL:
+        logging.error("❌ Будь ласка, встановіть TELEGRAM_TOKEN, CMC_API_KEY та APP_URL у Environment Variables")
         return
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -212,7 +176,7 @@ def main():
     r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}")
     logging.info(r.json())
 
-    # Запускаємо aiohttp сервер для прийому webhook
+    # Запускаємо aiohttp сервер
     web_app = web.Application()
     web_app.router.add_post("/webhook", webhook)
     web.run_app(web_app, port=int(os.environ.get("PORT", 10000)))
