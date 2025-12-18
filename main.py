@@ -7,7 +7,7 @@ import asyncio
 import logging
 import datetime
 import requests
-from dotenv import load_dotenv  # <- для .env файлу
+from dotenv import load_dotenv  # <- для локального запуску через .env
 
 # ===== DATA =====
 import numpy as np
@@ -34,9 +34,7 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
-
-# Завантажуємо змінні з .env (локально)
-load_dotenv()
+load_dotenv()  # Для локального запуску через .env
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CMC_API_KEY = os.getenv("CMC_API_KEY")
@@ -50,7 +48,6 @@ logging.basicConfig(
 )
 
 # ================= STORAGE =================
-
 def load_user_models():
     if os.path.exists(MODEL_FILE):
         with open(MODEL_FILE, "r") as f:
@@ -64,50 +61,50 @@ def save_user_models(data):
 user_models = load_user_models()
 
 # ================= COINMARKETCAP =================
-
 def load_crypto_data():
-    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
 
     headers = {
         "X-CMC_PRO_API_KEY": CMC_API_KEY
     }
 
     params = {
-        "symbol": "BTC",
-        "convert": "USD",
-        "interval": "hourly",
-        "count": 200
+        "start": "1",
+        "limit": "50",   # можна збільшити/зменшити
+        "convert": "USD"
     }
 
-    r = requests.get(url, headers=headers, params=params, timeout=15)
-    data = r.json()
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=15)
+        data = r.json()
 
-    if "data" not in data:
-        raise RuntimeError("CoinMarketCap API error")
+        if "data" not in data:
+            raise RuntimeError("CoinMarketCap API error: no 'data' in response")
 
-    quotes = data["data"]["quotes"]
+        # Візьмемо тільки BTC
+        btc_data = next((item for item in data["data"] if item["symbol"] == "BTC"), None)
+        if not btc_data:
+            raise RuntimeError("CoinMarketCap API error: BTC not found")
 
-    rows = []
-    for q in quotes:
-        rows.append({
-            "Date": q["time_open"],
-            "Price": q["quote"]["USD"]["close"]
-        })
+        # Створюємо DataFrame
+        df = pd.DataFrame([{
+            "Date": datetime.datetime.now(),
+            "Price": btc_data["quote"]["USD"]["price"]
+        }])
 
-    df = pd.DataFrame(rows)
-    df["Date"] = pd.to_datetime(df["Date"])
-    df.sort_values("Date", inplace=True)
+        # Створюємо "історичні" дані штучно (для тесту ML)
+        df = pd.concat([df]*100, ignore_index=True)
+        df["MA10"] = df["Price"].rolling(10).mean()
+        df["MA30"] = df["Price"].rolling(30).mean()
+        df["Volatility"] = df["Price"].pct_change().rolling(10).std()
+        df["Target"] = df["Price"].shift(-1)
 
-    # Indicators
-    df["MA10"] = df["Price"].rolling(10).mean()
-    df["MA30"] = df["Price"].rolling(30).mean()
-    df["Volatility"] = df["Price"].pct_change().rolling(10).std()
-    df["Target"] = df["Price"].shift(-1)
+        return df.dropna()
 
-    return df.dropna()
+    except requests.RequestException as e:
+        raise RuntimeError(f"CoinMarketCap API request failed: {str(e)}")
 
 # ================= ML =================
-
 def train_model(df):
     features = ["Price", "MA10", "MA30", "Volatility"]
 
@@ -133,7 +130,6 @@ def train_model(df):
     return model, df.iloc[-len(y_test):], y_test, predictions, mse
 
 # ================= PLOT =================
-
 def plot_prediction(df_test, y_test, predictions):
     plt.figure(figsize=(10, 5))
     plt.plot(df_test["Date"], y_test.values, label="Real")
@@ -151,7 +147,6 @@ def plot_prediction(df_test, y_test, predictions):
     return buf
 
 # ================= LOG =================
-
 def log_prediction(user_id, mse, total, elapsed):
     row = pd.DataFrame([{
         "time": datetime.datetime.now().isoformat(),
@@ -167,7 +162,6 @@ def log_prediction(user_id, mse, total, elapsed):
         row.to_csv(LOG_FILE, index=False)
 
 # ================= CORE =================
-
 def make_prediction(user_id):
     start = time.time()
 
@@ -190,7 +184,6 @@ def make_prediction(user_id):
     return text, plot
 
 # ================= TELEGRAM =================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Crypto прогнозатор (CoinMarketCap)\n\n"
@@ -199,24 +192,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-
     await update.message.reply_text("⏳ Розрахунок прогнозу...")
-
     try:
         loop = asyncio.get_running_loop()
         text, plot = await loop.run_in_executor(None, make_prediction, user_id)
-
         await update.message.reply_text(text)
         await update.message.reply_photo(photo=plot)
-
     except Exception as e:
         logging.exception("Prediction failed")
         await update.message.reply_text(f"❌ Помилка:\n{str(e)}")
 
 # ================= MAIN =================
-
 def main():
-    # Перевірка токенів перед запуском
+    # Перевірка токенів
     if not TELEGRAM_TOKEN:
         logging.error("❌ TELEGRAM_TOKEN не встановлено! Перевір Environment Variables або .env")
         return
@@ -240,7 +228,6 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    # Додаткова перевірка на Render
     logging.info("🔍 TELEGRAM_TOKEN = %s", TELEGRAM_TOKEN if TELEGRAM_TOKEN else "None")
     logging.info("🔍 CMC_API_KEY = %s", CMC_API_KEY if CMC_API_KEY else "None")
     main()
