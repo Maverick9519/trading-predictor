@@ -26,7 +26,7 @@ import requests
 import asyncio
 
 # ===== TELEGRAM TOKEN (ENV) =====
-TELEGRAM_TOKEN = os.environ.get("8257584771:AAHqw_h4x0wMhZS1reYfaUZ_6JBqhxorKIY")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN:
     raise RuntimeError("TELEGRAM_TOKEN not set in environment variables")
 
