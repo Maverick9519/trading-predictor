@@ -7,6 +7,7 @@ import asyncio
 import logging
 import datetime
 import requests
+from dotenv import load_dotenv  # <- для .env файлу
 
 # ===== DATA =====
 import numpy as np
@@ -33,6 +34,9 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
+
+# Завантажуємо змінні з .env (локально)
+load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CMC_API_KEY = os.getenv("CMC_API_KEY")
@@ -212,8 +216,13 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= MAIN =================
 
 def main():
-    if not TELEGRAM_TOKEN or not CMC_API_KEY:
-        raise RuntimeError("Missing TELEGRAM_TOKEN or CMC_API_KEY")
+    # Перевірка токенів перед запуском
+    if not TELEGRAM_TOKEN:
+        logging.error("❌ TELEGRAM_TOKEN не встановлено! Перевір Environment Variables або .env")
+        return
+    if not CMC_API_KEY:
+        logging.error("❌ CMC_API_KEY не встановлено! Перевір Environment Variables або .env")
+        return
 
     app = (
         ApplicationBuilder()
@@ -231,4 +240,7 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
+    # Додаткова перевірка на Render
+    logging.info("🔍 TELEGRAM_TOKEN = %s", TELEGRAM_TOKEN if TELEGRAM_TOKEN else "None")
+    logging.info("🔍 CMC_API_KEY = %s", CMC_API_KEY if CMC_API_KEY else "None")
     main()
