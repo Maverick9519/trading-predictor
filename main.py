@@ -7,7 +7,7 @@ import asyncio
 import logging
 import datetime
 import requests
-from dotenv import load_dotenv  # <- для локального запуску через .env
+from dotenv import load_dotenv
 
 # ===== DATA =====
 import numpy as np
@@ -20,7 +20,7 @@ from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.compose import TransformedTargetRegressor
 
-# ===== MATPLOTLIB (Render safe) =====
+# ===== MATPLOTLIB =====
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -30,7 +30,8 @@ from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    ContextTypes
+    ContextTypes,
+    CallbackContext
 )
 
 # ================= CONFIG =================
@@ -38,6 +39,7 @@ load_dotenv()  # Для локального запуску через .env
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CMC_API_KEY = os.getenv("CMC_API_KEY")
+APP_URL = os.getenv("APP_URL")  # https://твій_домен.onrender.com
 
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
@@ -63,16 +65,8 @@ user_models = load_user_models()
 # ================= COINMARKETCAP =================
 def load_crypto_data():
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
-
-    headers = {
-        "X-CMC_PRO_API_KEY": CMC_API_KEY
-    }
-
-    params = {
-        "start": "1",
-        "limit": "50",   # можна збільшити/зменшити
-        "convert": "USD"
-    }
+    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
+    params = {"start": "1", "limit": "50", "convert": "USD"}
 
     try:
         r = requests.get(url, headers=headers, params=params, timeout=15)
@@ -81,18 +75,16 @@ def load_crypto_data():
         if "data" not in data:
             raise RuntimeError("CoinMarketCap API error: no 'data' in response")
 
-        # Візьмемо тільки BTC
         btc_data = next((item for item in data["data"] if item["symbol"] == "BTC"), None)
         if not btc_data:
             raise RuntimeError("CoinMarketCap API error: BTC not found")
 
-        # Створюємо DataFrame
         df = pd.DataFrame([{
             "Date": datetime.datetime.now(),
             "Price": btc_data["quote"]["USD"]["price"]
         }])
 
-        # Створюємо "історичні" дані штучно (для тесту ML)
+        # Штучні історичні дані
         df = pd.concat([df]*100, ignore_index=True)
         df["MA10"] = df["Price"].rolling(10).mean()
         df["MA30"] = df["Price"].rolling(30).mean()
@@ -100,29 +92,21 @@ def load_crypto_data():
         df["Target"] = df["Price"].shift(-1)
 
         return df.dropna()
-
     except requests.RequestException as e:
         raise RuntimeError(f"CoinMarketCap API request failed: {str(e)}")
 
 # ================= ML =================
 def train_model(df):
     features = ["Price", "MA10", "MA30", "Volatility"]
-
     X = df[features]
     y = df["Target"]
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_scaled, y, test_size=0.2, shuffle=False
-    )
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, shuffle=False)
 
-    model = TransformedTargetRegressor(
-        regressor=LinearRegression(),
-        transformer=StandardScaler()
-    )
-
+    model = TransformedTargetRegressor(regressor=LinearRegression(), transformer=StandardScaler())
     model.fit(X_train, y_train)
     predictions = model.predict(X_test)
     mse = mean_squared_error(y_test, predictions)
@@ -143,7 +127,6 @@ def plot_prediction(df_test, y_test, predictions):
     plt.savefig(buf, format="png")
     buf.seek(0)
     plt.close()
-
     return buf
 
 # ================= LOG =================
@@ -155,7 +138,6 @@ def log_prediction(user_id, mse, total, elapsed):
         "sum_prediction": round(total, 2),
         "elapsed": round(elapsed, 2)
     }])
-
     if os.path.exists(LOG_FILE):
         row.to_csv(LOG_FILE, mode="a", header=False, index=False)
     else:
@@ -164,14 +146,11 @@ def log_prediction(user_id, mse, total, elapsed):
 # ================= CORE =================
 def make_prediction(user_id):
     start = time.time()
-
     df = load_crypto_data()
     _, df_test, y_test, predictions, mse = train_model(df)
     plot = plot_prediction(df_test, y_test, predictions)
-
     elapsed = time.time() - start
     total = float(np.sum(predictions))
-
     log_prediction(user_id, mse, total, elapsed)
 
     text = (
@@ -180,10 +159,9 @@ def make_prediction(user_id):
         f"Сума прогнозу: {total:.2f}\n"
         f"Час: {elapsed:.2f} сек"
     )
-
     return text, plot
 
-# ================= TELEGRAM =================
+# ================= TELEGRAM HANDLERS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Crypto прогнозатор (CoinMarketCap)\n\n"
@@ -203,31 +181,41 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Помилка:\n{str(e)}")
 
 # ================= MAIN =================
+from aiohttp import web
+
+async def webhook(request):
+    # Telegram POST
+    update = Update.de_json(await request.json(), app.bot)
+    await app.update_queue.put(update)
+    return web.Response(text="ok")
+
 def main():
-    # Перевірка токенів
+    global app
     if not TELEGRAM_TOKEN:
-        logging.error("❌ TELEGRAM_TOKEN не встановлено! Перевір Environment Variables або .env")
+        logging.error("❌ TELEGRAM_TOKEN не встановлено!")
         return
     if not CMC_API_KEY:
-        logging.error("❌ CMC_API_KEY не встановлено! Перевір Environment Variables або .env")
+        logging.error("❌ CMC_API_KEY не встановлено!")
+        return
+    if not APP_URL:
+        logging.error("❌ APP_URL не встановлено! Вкажи свій Render URL")
         return
 
-    app = (
-        ApplicationBuilder()
-        .token(TELEGRAM_TOKEN)
-        .connect_timeout(30)
-        .read_timeout(30)
-        .write_timeout(30)
-        .build()
-    )
-
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
 
-    logging.info("🤖 Bot started")
-    app.run_polling()
+    # Встановлюємо webhook
+    webhook_url = f"{APP_URL}/webhook"
+    logging.info(f"🔗 Setting webhook to {webhook_url}")
+    import requests
+    r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}")
+    logging.info(r.json())
+
+    # Запускаємо aiohttp сервер для прийому webhook
+    web_app = web.Application()
+    web_app.router.add_post("/webhook", webhook)
+    web.run_app(web_app, port=int(os.environ.get("PORT", 10000)))
 
 if __name__ == "__main__":
-    logging.info("🔍 TELEGRAM_TOKEN = %s", TELEGRAM_TOKEN if TELEGRAM_TOKEN else "None")
-    logging.info("🔍 CMC_API_KEY = %s", CMC_API_KEY if CMC_API_KEY else "None")
     main()
