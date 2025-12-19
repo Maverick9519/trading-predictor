@@ -1,8 +1,7 @@
-python-telegram-bot==20.6
+python-telegram-bot[webhooks]==20.6
+aiohttp
 requests
 numpy
 pandas
 scikit-learn
 matplotlib
-python-dotenv
-aiohttp
