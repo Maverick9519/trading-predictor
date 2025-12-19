@@ -25,6 +25,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 # ================= CONFIG =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Токен бота
 APP_URL = os.getenv("APP_URL")               # Напр., https://mybot.onrender.com
+CMC_API_KEY = os.getenv("CMC_API_KEY")       # CoinMarketCap API Key
 
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
@@ -62,30 +63,40 @@ def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_pr
 
 # ================= DATA =================
 def load_crypto_data():
-    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=100"
-    response = requests.get(url)
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
+    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
+    params = {
+        "symbol": "BTC",
+        "convert": "USD",
+        "interval": "hourly",
+        "count": 200
+    }
+
+    response = requests.get(url, headers=headers, params=params, timeout=15)
     data = response.json()
 
-    if 'prices' not in data or len(data['prices']) == 0:
-        raise RuntimeError("CoinGecko API не повернув дані")
+    if "data" not in data or "quotes" not in data["data"]:
+        raise RuntimeError("CoinMarketCap API не повернув дані")
 
-    prices = np.array([item[1] for item in data['prices']])
-    timestamps = [datetime.datetime.fromtimestamp(item[0] / 1000) for item in data['prices']]
-    df = pd.DataFrame({'Date': timestamps, 'Price': prices})
+    quotes = data["data"]["quotes"]
+    rows = []
+    for q in quotes:
+        rows.append({
+            "Date": q["time_open"],
+            "Price": q["quote"]["USD"]["close"]
+        })
 
-    df['Moving_Avg_10'] = df['Price'].rolling(window=10).mean()
-    df['Moving_Avg_50'] = df['Price'].rolling(window=50).mean()
-    df['Volatility'] = df['Price'].pct_change().rolling(window=10).std()
+    df = pd.DataFrame(rows)
+    df["Date"] = pd.to_datetime(df["Date"])
+    df.sort_values("Date", inplace=True)
 
-    delta = df['Price'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
+    # Indicators
+    df["MA10"] = df["Price"].rolling(10).mean()
+    df["MA30"] = df["Price"].rolling(30).mean()
+    df["Volatility"] = df["Price"].pct_change().rolling(10).std()
+    df["Target"] = df["Price"].shift(-1)
 
-    df['Target'] = df['Price'].shift(-1)
     df = df.dropna()
-
     if len(df) < 20:
         raise RuntimeError("Замало даних для тренування моделі")
 
@@ -93,7 +104,7 @@ def load_crypto_data():
 
 # ================= ML =================
 def train_model(df, model_type='LinearRegression'):
-    features = ['Price', 'Moving_Avg_10', 'Moving_Avg_50', 'Volatility', 'RSI']
+    features = ['Price', 'MA10', 'MA30', 'Volatility']
     X = df[features]
     y = df['Target']
 
@@ -205,8 +216,8 @@ async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= MAIN =================
 def main():
-    if not TELEGRAM_TOKEN or not APP_URL:
-        logging.error("❌ Будь ласка, встановіть TELEGRAM_TOKEN та APP_URL у Environment Variables")
+    if not TELEGRAM_TOKEN or not APP_URL or not CMC_API_KEY:
+        logging.error("❌ Будь ласка, встановіть TELEGRAM_TOKEN, APP_URL та CMC_API_KEY у Environment Variables")
         return
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
