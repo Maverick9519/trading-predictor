@@ -1,6 +1,16 @@
+import os
+import io
+import time
+import json
+import logging
+import datetime
+import requests
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
 from sklearn.linear_model import LinearRegression
 from sklearn.svm import SVR
 from sklearn.ensemble import RandomForestRegressor
@@ -8,48 +18,33 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.compose import TransformedTargetRegressor
+
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-)
-import logging
-import io
-import json
-import os
-import datetime
-import time
-import requests
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# === Telegram Token ===
-TELEGRAM_TOKEN = '8257584771:AAHqw_h4x0wMhZS1reYfaUZ_6JBqhxorKIY'
+# ================= CONFIG =================
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+APP_URL = os.getenv("APP_URL")  # Наприклад https://mybot.onrender.com
 
-# === Файли ===
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
 
-# === Логування ===
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# === Завантаження моделей ===
+# ================= STORAGE =================
 def load_user_models():
     if os.path.exists(MODEL_FILE):
-        with open(MODEL_FILE, 'r') as f:
+        with open(MODEL_FILE, "r") as f:
             return json.load(f)
     return {}
 
-# === Збереження моделей ===
 def save_user_models(data):
-    with open(MODEL_FILE, 'w') as f:
+    with open(MODEL_FILE, "w") as f:
         json.dump(data, f)
 
 user_models = load_user_models()
 
-# === Логування прогнозів ===
+# ================= LOG =================
 def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_prediction):
     df_log = pd.DataFrame([{
         "timestamp": datetime.datetime.now().isoformat(),
@@ -61,39 +56,34 @@ def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_pr
         "elapsed_time": round(elapsed_time, 2)
     }])
     if os.path.exists(LOG_FILE):
-        df_log.to_csv(LOG_FILE, mode='a', header=False, index=False)
+        df_log.to_csv(LOG_FILE, mode="a", header=False, index=False)
     else:
-        df_log.to_csv(LOG_FILE, mode='w', header=True, index=False)
+        df_log.to_csv(LOG_FILE, mode="w", header=True, index=False)
 
-# === Завантаження крипто-даних ===
+# ================= DATA =================
 def load_crypto_data():
     url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=100"
     response = requests.get(url)
     data = response.json()
-
     prices = np.array([item[1] for item in data['prices']])
     timestamps = [datetime.datetime.fromtimestamp(item[0] / 1000) for item in data['prices']]
     df = pd.DataFrame({'Date': timestamps, 'Price': prices})
-
     df['Moving_Avg_10'] = df['Price'].rolling(window=10).mean()
     df['Moving_Avg_50'] = df['Price'].rolling(window=50).mean()
     df['Volatility'] = df['Price'].pct_change().rolling(window=10).std()
-
     delta = df['Price'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
-
     df['Target'] = df['Price'].shift(-1)
     return df.dropna()
 
-# === Тренування моделі ===
+# ================= ML =================
 def train_model(df, model_type='LinearRegression'):
     features = ['Price', 'Moving_Avg_10', 'Moving_Avg_50', 'Volatility', 'RSI']
     X = df[features]
     y = df['Target']
-
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, shuffle=False, test_size=0.2)
@@ -109,19 +99,15 @@ def train_model(df, model_type='LinearRegression'):
     model.fit(X_train, y_train)
     predictions = model.predict(X_test)
     mse = mean_squared_error(y_test, predictions)
-
-    # Виправлено тут: використовуємо .loc замість .iloc
     return model, df.loc[y_test.index], y_test, predictions, mse
 
-# === Побудова графіка ===
+# ================= PLOT =================
 def plot_prediction(df_test, y_test, predictions):
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(10,5))
     plt.plot(df_test['Date'], y_test.values, label='Real')
     plt.plot(df_test['Date'], predictions, label='Predicted')
     plt.legend()
-    plt.title("Crypto Price Prediction")
-    plt.xlabel("Date")
-    plt.ylabel("Price")
+    plt.title("BTC Price Prediction")
     plt.xticks(rotation=45)
     buf = io.BytesIO()
     plt.savefig(buf, format='png')
@@ -129,7 +115,7 @@ def plot_prediction(df_test, y_test, predictions):
     plt.close()
     return buf
 
-# === Прогнозування та графік ===
+# ================= PREDICTION =================
 def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymous'):
     start_time = time.time()
     df = load_crypto_data()
@@ -147,7 +133,7 @@ def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymo
     )
     return text, plot_buf
 
-# === Telegram: /start ===
+# ================= TELEGRAM HANDLERS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я трейдинг-прогнозатор бот.\n"
@@ -157,7 +143,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/log — останні 5 прогнозів"
     )
 
-# === Telegram: /predict ===
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     model_type = user_models.get(user_id, 'LinearRegression')
@@ -167,10 +152,9 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text)
         await update.message.reply_photo(photo=plot_buf)
     except Exception as e:
-        await update.message.reply_text("Виникла помилка під час прогнозування.")
         logging.exception("Error during prediction")
+        await update.message.reply_text("Виникла помилка під час прогнозування.")
 
-# === Telegram: /model ===
 async def set_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if context.args:
@@ -184,7 +168,6 @@ async def set_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Використання: /model LinearRegression")
 
-# === Telegram: /log ===
 async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if not os.path.exists(LOG_FILE):
@@ -206,15 +189,30 @@ async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     await update.message.reply_text(log_text)
 
-# === Запуск бота ===
+# ================= MAIN =================
 def main():
+    if not TELEGRAM_TOKEN or not APP_URL:
+        logging.error("❌ Будь ласка, встановіть TELEGRAM_TOKEN та APP_URL у Environment Variables")
+        return
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
     app.add_handler(CommandHandler("model", set_model))
     app.add_handler(CommandHandler("log", show_log))
-    print("Бот запущено...")
-    app.run_polling()
+
+    webhook_url = f"{APP_URL}/webhook"
+    logging.info(f"🔗 Setting webhook to {webhook_url}")
+    import requests
+    r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}")
+    logging.info(r.json())
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000)),
+        url_path="webhook",
+        webhook_url=webhook_url
+    )
 
 if __name__ == '__main__':
     main()
