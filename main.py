@@ -65,27 +65,41 @@ def load_crypto_data():
     url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=100"
     response = requests.get(url)
     data = response.json()
+
+    if 'prices' not in data or len(data['prices']) == 0:
+        raise RuntimeError("CoinGecko API не повернув дані")
+
     prices = np.array([item[1] for item in data['prices']])
     timestamps = [datetime.datetime.fromtimestamp(item[0] / 1000) for item in data['prices']]
     df = pd.DataFrame({'Date': timestamps, 'Price': prices})
+
     df['Moving_Avg_10'] = df['Price'].rolling(window=10).mean()
     df['Moving_Avg_50'] = df['Price'].rolling(window=50).mean()
     df['Volatility'] = df['Price'].pct_change().rolling(window=10).std()
+
     delta = df['Price'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
+
     df['Target'] = df['Price'].shift(-1)
-    return df.dropna()
+    df = df.dropna()
+
+    if len(df) < 20:
+        raise RuntimeError("Замало даних для тренування моделі")
+
+    return df
 
 # ================= ML =================
 def train_model(df, model_type='LinearRegression'):
     features = ['Price', 'Moving_Avg_10', 'Moving_Avg_50', 'Volatility', 'RSI']
     X = df[features]
     y = df['Target']
+
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
+
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, shuffle=False, test_size=0.2)
 
     if model_type == 'SVR':
@@ -152,8 +166,8 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text)
         await update.message.reply_photo(photo=plot_buf)
     except Exception as e:
-        logging.exception("Error during prediction")
-        await update.message.reply_text("Виникла помилка під час прогнозування.")
+        logging.exception("Помилка під час прогнозування")
+        await update.message.reply_text(f"Виникла помилка під час прогнозування:\n{e}")
 
 async def set_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
