@@ -24,7 +24,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # ================= CONFIG =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-APP_URL = os.getenv("APP_URL")  # Наприклад https://mybot.onrender.com
+APP_URL = os.getenv("APP_URL")  # https://твій_домен.onrender.com
 
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
@@ -56,9 +56,9 @@ def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_pr
         "elapsed_time": round(elapsed_time, 2)
     }])
     if os.path.exists(LOG_FILE):
-        df_log.to_csv(LOG_FILE, mode="a", header=False, index=False)
+        df_log.to_csv(LOG_FILE, mode='a', header=False, index=False)
     else:
-        df_log.to_csv(LOG_FILE, mode="w", header=True, index=False)
+        df_log.to_csv(LOG_FILE, mode='w', header=True, index=False)
 
 # ================= DATA =================
 def load_crypto_data():
