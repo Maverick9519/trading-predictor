@@ -1,6 +1,7 @@
 import os
 import io
 import time
+import json
 import logging
 import datetime
 import requests
@@ -35,33 +36,56 @@ logging.basicConfig(
 # ================= CACHE =================
 DATA_CACHE = None
 LAST_LOAD = 0
-CACHE_TTL = 900  # 15 хвилин
+CACHE_TTL = 3600  # 1 година
+CACHE_FILE = "btc_cache.json"
 
 # ================= USER COOLDOWN =================
-USER_COOLDOWN = 60  # 1 хв
+USER_COOLDOWN = 300  # 5 хв
 last_call = {}
 
 # ================= COINGECKO FETCH WITH BACKOFF =================
 def fetch_coingecko_data(url, params):
     for wait in (1, 3, 5):
-        r = requests.get(url, params=params, timeout=15)
-        if r.status_code == 200:
-            return r
-        elif r.status_code == 429:
-            logging.warning(f"429 Too Many Requests, sleeping {wait}s")
+        try:
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code == 200:
+                return r
+            elif r.status_code == 429:
+                logging.warning(f"429 Too Many Requests, sleeping {wait}s")
+                time.sleep(wait)
+            else:
+                r.raise_for_status()
+        except requests.RequestException as e:
+            logging.warning(f"CoinGecko request failed: {e}, sleeping {wait}s")
             time.sleep(wait)
-        else:
-            r.raise_for_status()
-    raise RuntimeError("CoinGecko тимчасово недоступний (429)")
+    raise RuntimeError("CoinGecko тимчасово недоступний (429 або помилка мережі)")
 
 # ================= LOAD CRYPTO DATA =================
 def load_crypto_data():
     global DATA_CACHE, LAST_LOAD
 
-    if DATA_CACHE is not None and time.time() - LAST_LOAD < CACHE_TTL:
-        logging.info("📦 Using cached CoinGecko data")
+    now = time.time()
+
+    # Використовуємо кеш
+    if DATA_CACHE is not None and now - LAST_LOAD < CACHE_TTL:
+        logging.info("📦 Using in-memory cache")
         return DATA_CACHE
 
+    # Спробуємо fallback з локального файлу
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r") as f:
+                data = json.load(f)
+            df = pd.DataFrame(data)
+            df["Date"] = pd.to_datetime(df["Date"])
+            logging.info("📦 Using local cache file")
+            DATA_CACHE = df
+            LAST_LOAD = now
+            return df
+        except Exception:
+            logging.warning("Не вдалося завантажити локальний cache file")
+
+    # Завантажуємо з CoinGecko
     logging.info("🌐 Loading data from CoinGecko")
     url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
     params = {
@@ -90,8 +114,14 @@ def load_crypto_data():
     if len(df) < 30:
         raise RuntimeError("Недостатньо даних після обробки")
 
+    # Зберігаємо кеш
     DATA_CACHE = df
-    LAST_LOAD = time.time()
+    LAST_LOAD = now
+    try:
+        df.to_json(CACHE_FILE, orient="records", date_format="iso")
+    except Exception:
+        logging.warning("Не вдалося зберегти локальний кеш")
+
     return df
 
 # ================= ML TRAIN =================
@@ -165,7 +195,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Антиспам
     if user_id in last_call and now - last_call[user_id] < USER_COOLDOWN:
         await update.message.reply_text(
-            f"⏳ Зачекай {USER_COOLDOWN} сек між запитами"
+            f"⏳ Зачекай {USER_COOLDOWN // 60} хв між запитами"
         )
         return
     last_call[user_id] = now
