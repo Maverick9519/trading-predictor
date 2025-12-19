@@ -23,8 +23,8 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # ================= CONFIG =================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-APP_URL = os.getenv("APP_URL")  # https://твій_домен.onrender.com
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Токен бота
+APP_URL = os.getenv("APP_URL")               # Напр., https://mybot.onrender.com
 
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
