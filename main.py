@@ -1,4 +1,3 @@
-# ================= SYSTEM =================
 import os
 import io
 import time
@@ -21,15 +20,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # ================= CONFIG =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-
 if not TELEGRAM_TOKEN:
     raise RuntimeError("TELEGRAM_TOKEN не встановлено")
 
@@ -41,9 +35,26 @@ logging.basicConfig(
 # ================= CACHE =================
 DATA_CACHE = None
 LAST_LOAD = 0
-CACHE_TTL = 300  # 5 хвилин
+CACHE_TTL = 900  # 15 хвилин
 
-# ================= COINGECKO =================
+# ================= USER COOLDOWN =================
+USER_COOLDOWN = 60  # 1 хв
+last_call = {}
+
+# ================= COINGECKO FETCH WITH BACKOFF =================
+def fetch_coingecko_data(url, params):
+    for wait in (1, 3, 5):
+        r = requests.get(url, params=params, timeout=15)
+        if r.status_code == 200:
+            return r
+        elif r.status_code == 429:
+            logging.warning(f"429 Too Many Requests, sleeping {wait}s")
+            time.sleep(wait)
+        else:
+            r.raise_for_status()
+    raise RuntimeError("CoinGecko тимчасово недоступний (429)")
+
+# ================= LOAD CRYPTO DATA =================
 def load_crypto_data():
     global DATA_CACHE, LAST_LOAD
 
@@ -52,7 +63,6 @@ def load_crypto_data():
         return DATA_CACHE
 
     logging.info("🌐 Loading data from CoinGecko")
-
     url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
     params = {
         "vs_currency": "usd",
@@ -60,8 +70,7 @@ def load_crypto_data():
         "interval": "hourly"
     }
 
-    r = requests.get(url, params=params, timeout=15)
-    r.raise_for_status()
+    r = fetch_coingecko_data(url, params)
     data = r.json()
 
     if "prices" not in data or len(data["prices"]) < 50:
@@ -69,19 +78,15 @@ def load_crypto_data():
 
     rows = []
     for ts, price in data["prices"]:
-        rows.append({
-            "Date": datetime.datetime.fromtimestamp(ts / 1000),
-            "Price": price
-        })
+        rows.append({"Date": datetime.datetime.fromtimestamp(ts / 1000), "Price": price})
 
     df = pd.DataFrame(rows)
-
     df["MA10"] = df["Price"].rolling(10).mean()
     df["MA30"] = df["Price"].rolling(30).mean()
     df["Volatility"] = df["Price"].pct_change().rolling(10).std()
     df["Target"] = df["Price"].shift(-1)
-
     df = df.dropna()
+
     if len(df) < 30:
         raise RuntimeError("Недостатньо даних після обробки")
 
@@ -89,7 +94,7 @@ def load_crypto_data():
     LAST_LOAD = time.time()
     return df
 
-# ================= ML =================
+# ================= ML TRAIN =================
 def train_model(df):
     features = ["Price", "MA10", "MA30", "Volatility"]
     X = df[features]
@@ -129,14 +134,12 @@ def plot_prediction(df_test, y_test, predictions):
     plt.close()
     return buf
 
-# ================= CORE =================
-def make_prediction(user_id):
+# ================= CORE PREDICTION =================
+def make_prediction():
     start = time.time()
-
     df = load_crypto_data()
     df_test, y_test, preds, mse = train_model(df)
     plot = plot_prediction(df_test, y_test, preds)
-
     elapsed = time.time() - start
     next_price = preds[-1]
 
@@ -146,23 +149,32 @@ def make_prediction(user_id):
         f"MSE: {mse:.2f}\n"
         f"Час розрахунку: {elapsed:.2f} сек"
     )
-
     return text, plot
 
-# ================= TELEGRAM =================
+# ================= TELEGRAM HANDLERS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Crypto прогнозатор (CoinGecko, реальні дані)\n"
+        "🤖 Crypto прогнозатор (CoinGecko)\n"
         "/predict — отримати прогноз"
     )
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
+    now = time.time()
+
+    # Антиспам
+    if user_id in last_call and now - last_call[user_id] < USER_COOLDOWN:
+        await update.message.reply_text(
+            f"⏳ Зачекай {USER_COOLDOWN} сек між запитами"
+        )
+        return
+    last_call[user_id] = now
+
     await update.message.reply_text("⏳ Розрахунок прогнозу...")
 
     try:
         loop = asyncio.get_running_loop()
-        text, plot = await loop.run_in_executor(None, make_prediction, user_id)
+        text, plot = await loop.run_in_executor(None, make_prediction)
         await update.message.reply_text(text)
         await update.message.reply_photo(photo=plot)
     except Exception as e:
