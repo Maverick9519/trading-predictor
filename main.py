@@ -7,7 +7,7 @@ import datetime
 import requests
 import asyncio
 
-from dotenv import load_dotenv  # <-- ДОДАНО
+from dotenv import load_dotenv
 
 import numpy as np
 import pandas as pd
@@ -26,13 +26,17 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # ================= LOAD ENV =================
-load_dotenv()  # <-- ПІДКЛЮЧЕННЯ .env
+load_dotenv()
 
-# ================= CONFIG =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-if not TELEGRAM_TOKEN:
-    raise RuntimeError("❌ TELEGRAM_TOKEN не встановлено (.env або system env)")
+CMC_API_KEY = os.getenv("CMC_API_KEY")
 
+if not TELEGRAM_TOKEN:
+    raise RuntimeError("❌ TELEGRAM_TOKEN не встановлено")
+if not CMC_API_KEY:
+    raise RuntimeError("❌ CMC_API_KEY не встановлено")
+
+# ================= LOGGING =================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -41,31 +45,33 @@ logging.basicConfig(
 # ================= CACHE =================
 DATA_CACHE = None
 LAST_LOAD = 0
-CACHE_TTL = 3600  # 1 година
+CACHE_TTL = 3600
 CACHE_FILE = "btc_cache.json"
 
 # ================= USER COOLDOWN =================
-USER_COOLDOWN = 300  # 5 хв
+USER_COOLDOWN = 300
 last_call = {}
 
-# ================= COINGECKO FETCH WITH BACKOFF =================
-def fetch_coingecko_data(url, params):
-    for wait in (1, 3, 5):
-        try:
-            r = requests.get(url, params=params, timeout=15)
-            if r.status_code == 200:
-                return r
-            elif r.status_code == 429:
-                logging.warning(f"429 Too Many Requests, sleeping {wait}s")
-                time.sleep(wait)
-            else:
-                r.raise_for_status()
-        except requests.RequestException as e:
-            logging.warning(f"CoinGecko request failed: {e}, sleeping {wait}s")
-            time.sleep(wait)
-    raise RuntimeError("CoinGecko тимчасово недоступний (429 або помилка мережі)")
+# ================= CMC FETCH =================
+def fetch_cmc_data():
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
+    params = {
+        "symbol": "BTC",
+        "convert": "USD",
+        "interval": "hourly",
+        "count": 200
+    }
+    headers = {
+        "X-CMC_PRO_API_KEY": CMC_API_KEY
+    }
 
-# ================= LOAD CRYPTO DATA =================
+    r = requests.get(url, headers=headers, params=params, timeout=20)
+    if r.status_code != 200:
+        raise RuntimeError(f"CoinMarketCap error {r.status_code}: {r.text}")
+
+    return r.json()
+
+# ================= LOAD DATA =================
 def load_crypto_data():
     global DATA_CACHE, LAST_LOAD
     now = time.time()
@@ -80,59 +86,53 @@ def load_crypto_data():
                 data = json.load(f)
             df = pd.DataFrame(data)
             df["Date"] = pd.to_datetime(df["Date"])
-            logging.info("📦 Using local cache file")
             DATA_CACHE = df
             LAST_LOAD = now
+            logging.info("📦 Using local cache file")
             return df
         except Exception:
-            logging.warning("Не вдалося завантажити локальний cache file")
+            logging.warning("Cache file invalid")
 
-    logging.info("🌐 Loading data from CoinGecko")
-    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
-    params = {
-        "vs_currency": "usd",
-        "days": "7",
-        "interval": "hourly"
-    }
+    logging.info("🌐 Loading data from CoinMarketCap")
+    data = fetch_cmc_data()
 
-    r = fetch_coingecko_data(url, params)
-    data = r.json()
-
-    if "prices" not in data or len(data["prices"]) < 50:
-        raise RuntimeError("CoinGecko не повернув достатньо даних")
-
-    rows = [
-        {"Date": datetime.datetime.fromtimestamp(ts / 1000), "Price": price}
-        for ts, price in data["prices"]
-    ]
+    quotes = data["data"]["quotes"]
+    rows = []
+    for q in quotes:
+        rows.append({
+            "Date": pd.to_datetime(q["timestamp"]),
+            "Price": q["quote"]["USD"]["close"]
+        })
 
     df = pd.DataFrame(rows)
+    df = df.sort_values("Date")
+
     df["MA10"] = df["Price"].rolling(10).mean()
     df["MA30"] = df["Price"].rolling(30).mean()
     df["Volatility"] = df["Price"].pct_change().rolling(10).std()
     df["Target"] = df["Price"].shift(-1)
     df = df.dropna()
 
-    if len(df) < 30:
-        raise RuntimeError("Недостатньо даних після обробки")
+    if len(df) < 50:
+        raise RuntimeError("Недостатньо даних від CoinMarketCap")
 
     DATA_CACHE = df
     LAST_LOAD = now
+
     try:
         df.to_json(CACHE_FILE, orient="records", date_format="iso")
     except Exception:
-        logging.warning("Не вдалося зберегти локальний кеш")
+        logging.warning("Failed to save cache")
 
     return df
 
-# ================= ML TRAIN =================
+# ================= ML =================
 def train_model(df):
     features = ["Price", "MA10", "MA30", "Volatility"]
     X = df[features]
     y = df["Target"]
 
     X_scaled = StandardScaler().fit_transform(X)
-
     X_train, X_test, y_train, y_test = train_test_split(
         X_scaled, y, test_size=0.2, shuffle=False
     )
@@ -154,7 +154,7 @@ def plot_prediction(df_test, y_test, preds):
     plt.plot(df_test["Date"], y_test.values, label="Real")
     plt.plot(df_test["Date"], preds, label="Predicted")
     plt.legend()
-    plt.title("BTC Price Prediction (CoinGecko)")
+    plt.title("BTC Price Prediction (CoinMarketCap)")
     plt.xticks(rotation=45)
 
     buf = io.BytesIO()
@@ -164,7 +164,7 @@ def plot_prediction(df_test, y_test, preds):
     plt.close()
     return buf
 
-# ================= CORE PREDICTION =================
+# ================= CORE =================
 def make_prediction():
     start = time.time()
     df = load_crypto_data()
@@ -172,19 +172,17 @@ def make_prediction():
     plot = plot_prediction(df_test, y_test, preds)
 
     text = (
-        f"📈 BTC прогноз (CoinGecko)\n"
+        f"📈 BTC прогноз (CoinMarketCap)\n"
         f"Прогноз наступної години: {preds[-1]:.2f} USD\n"
         f"MSE: {mse:.2f}\n"
         f"Час розрахунку: {time.time() - start:.2f} сек"
     )
     return text, plot
 
-# ================= TELEGRAM HANDLERS =================
+# ================= TELEGRAM =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    logging.info(f"START | user_id={user.id} username=@{user.username}")
     await update.message.reply_text(
-        "🤖 Crypto прогнозатор (CoinGecko)\n"
+        "🤖 Crypto прогнозатор (CoinMarketCap)\n"
         "/predict — отримати прогноз"
     )
 
@@ -194,13 +192,11 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user.id in last_call and now - last_call[user.id] < USER_COOLDOWN:
         await update.message.reply_text(
-            f"⏳ Зачекай {USER_COOLDOWN // 60} хв між запитами"
+            f"⏳ Зачекай {USER_COOLDOWN // 60} хв"
         )
         return
 
     last_call[user.id] = now
-    logging.info(f"PREDICT | user_id={user.id} username=@{user.username}")
-
     await update.message.reply_text("⏳ Розрахунок прогнозу...")
 
     try:
@@ -218,7 +214,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
 
-    logging.info("🤖 Bot started (polling)")
+    logging.info("🤖 Bot started (CoinMarketCap)")
     app.run_polling()
 
 if __name__ == "__main__":
