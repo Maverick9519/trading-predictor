@@ -1,7 +1,7 @@
-python-telegram-bot==20.7
-numpy
-pandas
-scikit-learn
-matplotlib
+flask
+python-telegram-bot==20.5
 requests
-python-dotenv
+pandas
+numpy
+matplotlib
+scikit-learn
