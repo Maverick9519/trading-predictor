@@ -1,31 +1,34 @@
+import os
+import io
+import time
+import json
+import logging
+import datetime
+import requests
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+
 from sklearn.linear_model import LinearRegression
 from sklearn.svm import SVR
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.compose import TransformedTargetRegressor
+from sklearn.metrics import mean_squared_error
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import logging
-import io
-import json
-import os
-import datetime
-import time
-import requests
+
+from dotenv import load_dotenv
+load_dotenv()
 
 # ================= CONFIG =================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CMC_API_KEY = os.environ.get("CMC_API_KEY")  # CoinMarketCap API key
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CMC_API_KEY = os.getenv("CMC_API_KEY")
 
-if not TELEGRAM_TOKEN:
-    raise RuntimeError("TELEGRAM_TOKEN не встановлено")
-if not CMC_API_KEY:
-    raise RuntimeError("CMC_API_KEY не встановлено")
+if not TELEGRAM_TOKEN or not CMC_API_KEY:
+    raise RuntimeError("TELEGRAM_TOKEN або CMC_API_KEY не встановлено у .env")
 
 # ================= FILES =================
 MODEL_FILE = "user_models.json"
@@ -50,7 +53,7 @@ def save_user_models(data):
 
 user_models = load_user_models()
 
-# ================= LOG PREDICTIONS =================
+# ================= LOGGING PREDICTIONS =================
 def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_prediction):
     df_log = pd.DataFrame([{
         "timestamp": datetime.datetime.now().isoformat(),
@@ -66,26 +69,30 @@ def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_pr
     else:
         df_log.to_csv(LOG_FILE, mode='w', header=True, index=False)
 
-# ================= LOAD CRYPTO DATA (CoinMarketCap) =================
+# ================= LOAD CRYPTO DATA =================
 def load_crypto_data():
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical"
-    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
     params = {
         "symbol": "BTC",
-        "time_start": int(time.time()) - 86400*100,  # last 100 days
+        "time_start": int(time.time()) - 86400*100,  # 100 днів назад
         "interval": "daily"
     }
+    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
+
     r = requests.get(url, headers=headers, params=params)
+    if r.status_code != 200:
+        raise RuntimeError(f"CMC API error: {r.status_code} {r.text}")
+
     data = r.json()
-
-    # Якщо щось пішло не так
-    if "data" not in data or "quotes" not in data["data"]:
-        raise RuntimeError("CoinMarketCap не повернув дані")
-
-    prices = np.array([q['quote']['USD']['close'] for q in data["data"]["quotes"]])
-    timestamps = [datetime.datetime.fromtimestamp(q['time_open']) for q in data["data"]["quotes"]]
+    try:
+        quotes = data["data"]["quotes"]
+        prices = np.array([float(q['quote']['USD']['close']) for q in quotes])
+        timestamps = [datetime.datetime.fromisoformat(q['time_open']) for q in quotes]
+    except Exception as e:
+        raise RuntimeError(f"Помилка обробки даних CMC: {e}")
 
     df = pd.DataFrame({'Date': timestamps, 'Price': prices})
+
     df['Moving_Avg_10'] = df['Price'].rolling(window=10).mean()
     df['Moving_Avg_50'] = df['Price'].rolling(window=50).mean()
     df['Volatility'] = df['Price'].pct_change().rolling(window=10).std()
@@ -120,6 +127,7 @@ def train_model(df, model_type='LinearRegression'):
     model.fit(X_train, y_train)
     predictions = model.predict(X_test)
     mse = mean_squared_error(y_test, predictions)
+
     return model, df.loc[y_test.index], y_test, predictions, mse
 
 # ================= PLOT =================
@@ -128,7 +136,7 @@ def plot_prediction(df_test, y_test, predictions):
     plt.plot(df_test['Date'], y_test.values, label='Real')
     plt.plot(df_test['Date'], predictions, label='Predicted')
     plt.legend()
-    plt.title("Crypto Price Prediction")
+    plt.title("BTC Price Prediction (CMC)")
     plt.xlabel("Date")
     plt.ylabel("Price")
     plt.xticks(rotation=45)
@@ -157,7 +165,7 @@ def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymo
     return text, plot_buf
 
 # ================= TELEGRAM HANDLERS =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я трейдинг-прогнозатор бот.\n"
         "Команди:\n"
@@ -166,7 +174,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/log — останні 5 прогнозів"
     )
 
-async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     model_type = user_models.get(user_id, 'LinearRegression')
     await update.message.reply_text(f"Прогноз за моделлю: {model_type}...")
@@ -175,10 +183,10 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text)
         await update.message.reply_photo(photo=plot_buf)
     except Exception as e:
-        await update.message.reply_text("Виникла помилка під час прогнозування.")
+        await update.message.reply_text(f"Виникла помилка під час прогнозування: {e}")
         logging.exception("Error during prediction")
 
-async def set_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def set_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if context.args:
         model = context.args[0]
@@ -191,7 +199,7 @@ async def set_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Використання: /model LinearRegression")
 
-async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if not os.path.exists(LOG_FILE):
         await update.message.reply_text("Журнал прогнозів порожній.")
@@ -215,10 +223,10 @@ async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= MAIN =================
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("predict", predict))
-    app.add_handler(CommandHandler("model", set_model))
-    app.add_handler(CommandHandler("log", show_log))
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("predict", predict_command))
+    app.add_handler(CommandHandler("model", set_model_command))
+    app.add_handler(CommandHandler("log", show_log_command))
     print("Бот запущено...")
     app.run_polling()
 
