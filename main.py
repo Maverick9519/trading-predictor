@@ -1,3 +1,10 @@
+import os
+import io
+import json
+import time
+import logging
+import datetime
+import requests
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,35 +15,29 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.compose import TransformedTargetRegressor
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-)
-import logging
-import io
-import json
-import os
-import datetime
-import time
-import requests
-from flask import Flask, request, Response
 
-# === Telegram Token ===
-TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')  # в Render додай як Environment Variable
+from flask import Flask, request
+from telegram import Update, Bot
+from telegram.ext import Dispatcher, CommandHandler, ContextTypes
 
-# === Файли ===
+# ================= Config =================
+from dotenv import load_dotenv
+load_dotenv()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
 
-# === Логування ===
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# === Завантаження моделей ===
+# ================= Telegram Bot =================
+bot = Bot(token=TELEGRAM_TOKEN)
+dispatcher = Dispatcher(bot=bot, update_queue=None, workers=0, use_context=True)
+
+# ================= User models =================
 def load_user_models():
     if os.path.exists(MODEL_FILE):
         with open(MODEL_FILE, 'r') as f:
@@ -49,58 +50,36 @@ def save_user_models(data):
 
 user_models = load_user_models()
 
-# === Логування прогнозів ===
-def log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_prediction):
-    df_log = pd.DataFrame([{
-        "timestamp": datetime.datetime.now().isoformat(),
-        "user_id": user_id,
-        "model_type": model_type,
-        "mse": round(mse, 4),
-        "prediction_preview": list(np.round(predictions[:3], 2)),
-        "prediction_sum": round(total_prediction, 2),
-        "elapsed_time": round(elapsed_time, 2)
-    }])
-    if os.path.exists(LOG_FILE):
-        df_log.to_csv(LOG_FILE, mode='a', header=False, index=False)
-    else:
-        df_log.to_csv(LOG_FILE, mode='w', header=True, index=False)
-
-# === Завантаження крипто-даних ===
+# ================= Data + ML =================
 def load_crypto_data():
     url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=100"
     response = requests.get(url)
     data = response.json()
-
     prices = np.array([item[1] for item in data['prices']])
-    timestamps = [datetime.datetime.fromtimestamp(item[0] / 1000) for item in data['prices']]
+    timestamps = [datetime.datetime.fromtimestamp(item[0]/1000) for item in data['prices']]
     df = pd.DataFrame({'Date': timestamps, 'Price': prices})
-
-    df['Moving_Avg_10'] = df['Price'].rolling(window=10).mean()
-    df['Moving_Avg_50'] = df['Price'].rolling(window=50).mean()
-    df['Volatility'] = df['Price'].pct_change().rolling(window=10).std()
-
+    df['Moving_Avg_10'] = df['Price'].rolling(10).mean()
+    df['Moving_Avg_50'] = df['Price'].rolling(50).mean()
+    df['Volatility'] = df['Price'].pct_change().rolling(10).std()
     delta = df['Price'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
-
     df['Target'] = df['Price'].shift(-1)
     return df.dropna()
 
-# === Тренування моделі ===
 def train_model(df, model_type='LinearRegression'):
-    features = ['Price', 'Moving_Avg_10', 'Moving_Avg_50', 'Volatility', 'RSI']
+    features = ['Price','Moving_Avg_10','Moving_Avg_50','Volatility','RSI']
     X = df[features]
     y = df['Target']
-
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, shuffle=False, test_size=0.2)
 
-    if model_type == 'SVR':
+    if model_type=='SVR':
         base_model = SVR()
-    elif model_type == 'RandomForest':
+    elif model_type=='RandomForest':
         base_model = RandomForestRegressor(n_estimators=100)
     else:
         base_model = LinearRegression()
@@ -109,18 +88,14 @@ def train_model(df, model_type='LinearRegression'):
     model.fit(X_train, y_train)
     predictions = model.predict(X_test)
     mse = mean_squared_error(y_test, predictions)
-
     return model, df.loc[y_test.index], y_test, predictions, mse
 
-# === Побудова графіка ===
 def plot_prediction(df_test, y_test, predictions):
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(10,5))
     plt.plot(df_test['Date'], y_test.values, label='Real')
     plt.plot(df_test['Date'], predictions, label='Predicted')
     plt.legend()
     plt.title("Crypto Price Prediction")
-    plt.xlabel("Date")
-    plt.ylabel("Price")
     plt.xticks(rotation=45)
     buf = io.BytesIO()
     plt.savefig(buf, format='png')
@@ -128,54 +103,48 @@ def plot_prediction(df_test, y_test, predictions):
     plt.close()
     return buf
 
-# === Прогнозування та графік ===
 def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymous'):
     start_time = time.time()
     df = load_crypto_data()
     model, df_test, y_test, predictions, mse = train_model(df, model_type)
     plot_buf = plot_prediction(df_test, y_test, predictions)
-    elapsed_time = time.time() - start_time
+    elapsed_time = time.time()-start_time
     total_prediction = np.sum(predictions)
-    log_prediction(user_id, model_type, mse, predictions, elapsed_time, total_prediction)
-
-    text = (
-        f"Модель: {model_type}\n"
-        f"Mean Squared Error: {mse:.2f}\n"
-        f"Сума прогнозу: {total_prediction:.2f}\n"
-        f"Час прогнозування: {elapsed_time:.2f} сек."
-    )
+    # log
+    df_log = pd.DataFrame([{
+        "timestamp": datetime.datetime.now().isoformat(),
+        "user_id": user_id,
+        "model_type": model_type,
+        "mse": round(mse,4),
+        "prediction_preview": list(np.round(predictions[:3],2)),
+        "prediction_sum": round(total_prediction,2),
+        "elapsed_time": round(elapsed_time,2)
+    }])
+    if os.path.exists(LOG_FILE):
+        df_log.to_csv(LOG_FILE, mode='a', header=False, index=False)
+    else:
+        df_log.to_csv(LOG_FILE, mode='w', header=True, index=False)
+    text = (f"Модель: {model_type}\nMSE: {mse:.2f}\nСума прогнозу: {total_prediction:.2f}\nЧас прогнозування: {elapsed_time:.2f} сек.")
     return text, plot_buf
 
-# === Telegram: /start ===
+# ================= Handlers =================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Привіт! Я трейдинг-прогнозатор бот.\n"
-        "Команди:\n"
-        "/predict — отримати прогноз\n"
-        "/model [LinearRegression|SVR|RandomForest] — обрати модель\n"
-        "/log — останні 5 прогнозів"
-    )
+    await update.message.reply_text("Привіт! Я трейдинг-прогнозатор бот.\n/predict — прогноз\n/model — обрати модель\n/log — останні 5 прогнозів")
 
-# === Telegram: /predict ===
 async def predict_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     model_type = user_models.get(user_id, 'LinearRegression')
     await update.message.reply_text(f"Прогноз за моделлю: {model_type}...")
-    try:
-        text, plot_buf = get_prediction_text_and_plot(model_type, user_id)
-        await update.message.reply_text(text)
-        await update.message.reply_photo(photo=plot_buf)
-    except Exception as e:
-        await update.message.reply_text("Виникла помилка під час прогнозування.")
-        logging.exception("Error during prediction")
+    text, plot_buf = get_prediction_text_and_plot(model_type, user_id)
+    await update.message.reply_text(text)
+    await update.message.reply_photo(photo=plot_buf)
 
-# === Telegram: /model ===
-async def set_model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if context.args:
         model = context.args[0]
-        if model in ['LinearRegression', 'SVR', 'RandomForest']:
-            user_models[user_id] = model
+        if model in ['LinearRegression','SVR','RandomForest']:
+            user_models[user_id]=model
             save_user_models(user_models)
             await update.message.reply_text(f"Модель встановлено: {model}")
         else:
@@ -183,49 +152,40 @@ async def set_model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Використання: /model LinearRegression")
 
-# === Telegram: /log ===
-async def show_log_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def log_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if not os.path.exists(LOG_FILE):
         await update.message.reply_text("Журнал прогнозів порожній.")
         return
     df = pd.read_csv(LOG_FILE)
-    df_user = df[df['user_id'] == user_id].tail(5)
+    df_user = df[df['user_id']==user_id].tail(5)
     if df_user.empty:
         await update.message.reply_text("Для вас ще не збережено прогнозів.")
         return
-    log_text = "Останні 5 прогнозів:\n"
+    log_text="Останні 5 прогнозів:\n"
     for _, row in df_user.iterrows():
-        log_text += (
-            f"- {row['timestamp'][:19]}\n"
-            f"  Модель: {row['model_type']}, MSE: {row['mse']}, "
-            f"Сума: {row.get('prediction_sum', 'N/A')}, "
-            f"Час: {row.get('elapsed_time', 'N/A')} сек, "
-            f"Прогноз: {row['prediction_preview']}\n"
-        )
+        log_text += f"- {row['timestamp'][:19]}\n  Модель: {row['model_type']}, MSE: {row['mse']}, Сума: {row.get('prediction_sum','N/A')}, Час: {row.get('elapsed_time','N/A')} сек, Прогноз: {row['prediction_preview']}\n"
     await update.message.reply_text(log_text)
 
-# === Flask app для webhook ===
-app_flask = Flask(__name__)
-telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+dispatcher.add_handler(CommandHandler("start", start_cmd))
+dispatcher.add_handler(CommandHandler("predict", predict_cmd))
+dispatcher.add_handler(CommandHandler("model", model_cmd))
+dispatcher.add_handler(CommandHandler("log", log_cmd))
 
-telegram_app.add_handler(CommandHandler("start", start_cmd))
-telegram_app.add_handler(CommandHandler("predict", predict_cmd))
-telegram_app.add_handler(CommandHandler("model", set_model_cmd))
-telegram_app.add_handler(CommandHandler("log", show_log_cmd))
+# ================= Flask for webhook =================
+app = Flask(__name__)
 
-@app_flask.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
+@app.route(f"/{TELEGRAM_TOKEN}", methods=['POST'])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    telegram_app.update_queue.put(update)
-    return Response("ok", status=200)
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
+    return "OK", 200
 
-if __name__ == "__main__":
-    # В Render потрібно задати PORT через Environment Variable
-    port = int(os.environ.get("PORT", 5000))
-    # Перед запуском потрібно встановити webhook
-    url = os.environ.get("APP_URL")  # наприклад: https://your-app.onrender.com
-    if url:
-        telegram_app.bot.set_webhook(f"{url}/webhook/{TELEGRAM_TOKEN}")
-        print(f"Webhook встановлено на {url}/webhook/{TELEGRAM_TOKEN}")
-    app_flask.run(host="0.0.0.0", port=port)
+@app.route("/")
+def index():
+    return "Бот працює!", 200
+
+if __name__=="__main__":
+    # На Render потрібно встановити webhook
+    bot.set_webhook(url=f"https://<ТВОЙ_ДОМЕН>.onrender.com/{TELEGRAM_TOKEN}")
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
