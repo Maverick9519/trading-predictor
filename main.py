@@ -24,6 +24,7 @@ from telegram.ext import Dispatcher, CommandHandler, ContextTypes
 from dotenv import load_dotenv
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CMC_API_KEY = os.getenv("CMC_API_KEY")  # CoinMarketCap API key
 
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
@@ -52,12 +53,28 @@ user_models = load_user_models()
 
 # ================= Data + ML =================
 def load_crypto_data():
-    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=100"
-    response = requests.get(url)
-    data = response.json()
-    prices = np.array([item[1] for item in data['prices']])
-    timestamps = [datetime.datetime.fromtimestamp(item[0]/1000) for item in data['prices']]
-    df = pd.DataFrame({'Date': timestamps, 'Price': prices})
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
+    params = {
+        "symbol": "BTC",
+        "convert": "USD",
+        "time_start": (datetime.datetime.now() - datetime.timedelta(days=100)).strftime("%Y-%m-%d"),
+        "time_end": datetime.datetime.now().strftime("%Y-%m-%d"),
+    }
+    headers = {
+        "X-CMC_PRO_API_KEY": CMC_API_KEY
+    }
+    r = requests.get(url, params=params, headers=headers, timeout=10)
+    data = r.json()
+    if "data" not in data or "quotes" not in data["data"]:
+        raise RuntimeError("Не вдалося завантажити дані з CoinMarketCap")
+
+    rows = []
+    for quote in data["data"]["quotes"]:
+        ts = datetime.datetime.fromisoformat(quote["time_open"].replace("Z",""))
+        price = quote["quote"]["USD"]["close"]
+        rows.append({"Date": ts, "Price": price})
+
+    df = pd.DataFrame(rows)
     df['Moving_Avg_10'] = df['Price'].rolling(10).mean()
     df['Moving_Avg_50'] = df['Price'].rolling(50).mean()
     df['Volatility'] = df['Price'].pct_change().rolling(10).std()
@@ -95,7 +112,7 @@ def plot_prediction(df_test, y_test, predictions):
     plt.plot(df_test['Date'], y_test.values, label='Real')
     plt.plot(df_test['Date'], predictions, label='Predicted')
     plt.legend()
-    plt.title("Crypto Price Prediction")
+    plt.title("Crypto Price Prediction (CMC)")
     plt.xticks(rotation=45)
     buf = io.BytesIO()
     plt.savefig(buf, format='png')
@@ -187,5 +204,5 @@ def index():
 
 if __name__=="__main__":
     # На Render потрібно встановити webhook
-    bot.set_webhook(url=f"https://<ТВОЙ_ДОМЕН>.onrender.com/{TELEGRAM_TOKEN}")
+    bot.set_webhook(url=f"https://<YOUR_RENDER_DOMAIN>.onrender.com/{TELEGRAM_TOKEN}")
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
