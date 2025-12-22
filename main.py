@@ -17,14 +17,15 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.compose import TransformedTargetRegressor
 
 from flask import Flask, request
-from telegram import Update, Bot
-from telegram.ext import Dispatcher, CommandHandler, ContextTypes
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ================= Config =================
 from dotenv import load_dotenv
 load_dotenv()
+
+# ================= Config =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CMC_API_KEY = os.getenv("CMC_API_KEY")  # CoinMarketCap API key
+CMC_API_KEY = os.getenv("CMC_API_KEY")
 
 MODEL_FILE = "user_models.json"
 LOG_FILE = "prediction_log.csv"
@@ -34,11 +35,10 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# ================= Telegram Bot =================
-bot = Bot(token=TELEGRAM_TOKEN)
-dispatcher = Dispatcher(bot=bot, update_queue=None, workers=0, use_context=True)
+# ================= Flask App =================
+app = Flask(__name__)
 
-# ================= User models =================
+# ================= User Models =================
 def load_user_models():
     if os.path.exists(MODEL_FILE):
         with open(MODEL_FILE, 'r') as f:
@@ -51,7 +51,7 @@ def save_user_models(data):
 
 user_models = load_user_models()
 
-# ================= Data + ML =================
+# ================= Crypto Data =================
 def load_crypto_data():
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
     params = {
@@ -60,9 +60,7 @@ def load_crypto_data():
         "time_start": (datetime.datetime.now() - datetime.timedelta(days=100)).strftime("%Y-%m-%d"),
         "time_end": datetime.datetime.now().strftime("%Y-%m-%d"),
     }
-    headers = {
-        "X-CMC_PRO_API_KEY": CMC_API_KEY
-    }
+    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
     r = requests.get(url, params=params, headers=headers, timeout=10)
     data = r.json()
     if "data" not in data or "quotes" not in data["data"]:
@@ -144,9 +142,11 @@ def get_prediction_text_and_plot(model_type='LinearRegression', user_id='anonymo
     text = (f"Модель: {model_type}\nMSE: {mse:.2f}\nСума прогнозу: {total_prediction:.2f}\nЧас прогнозування: {elapsed_time:.2f} сек.")
     return text, plot_buf
 
-# ================= Handlers =================
+# ================= Telegram Handlers =================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привіт! Я трейдинг-прогнозатор бот.\n/predict — прогноз\n/model — обрати модель\n/log — останні 5 прогнозів")
+    await update.message.reply_text(
+        "Привіт! Я трейдинг-прогнозатор бот.\n/predict — прогноз\n/model — обрати модель\n/log — останні 5 прогнозів"
+    )
 
 async def predict_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -184,18 +184,18 @@ async def log_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_text += f"- {row['timestamp'][:19]}\n  Модель: {row['model_type']}, MSE: {row['mse']}, Сума: {row.get('prediction_sum','N/A')}, Час: {row.get('elapsed_time','N/A')} сек, Прогноз: {row['prediction_preview']}\n"
     await update.message.reply_text(log_text)
 
-dispatcher.add_handler(CommandHandler("start", start_cmd))
-dispatcher.add_handler(CommandHandler("predict", predict_cmd))
-dispatcher.add_handler(CommandHandler("model", model_cmd))
-dispatcher.add_handler(CommandHandler("log", log_cmd))
+# ================= Application =================
+app_bot = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+app_bot.add_handler(CommandHandler("start", start_cmd))
+app_bot.add_handler(CommandHandler("predict", predict_cmd))
+app_bot.add_handler(CommandHandler("model", model_cmd))
+app_bot.add_handler(CommandHandler("log", log_cmd))
 
-# ================= Flask for webhook =================
-app = Flask(__name__)
-
-@app.route(f"/{TELEGRAM_TOKEN}", methods=['POST'])
+# ================= Webhook =================
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
+    update = Update.de_json(request.get_json(force=True), app_bot.bot)
+    app_bot.update_queue.put(update)
     return "OK", 200
 
 @app.route("/")
@@ -203,6 +203,7 @@ def index():
     return "Бот працює!", 200
 
 if __name__=="__main__":
-    # На Render потрібно встановити webhook
-    bot.set_webhook(url=f"https://<YOUR_RENDER_DOMAIN>.onrender.com/{TELEGRAM_TOKEN}")
+    # Webhook для Render
+    url = f"https://<YOUR_RENDER_DOMAIN>.onrender.com/{TELEGRAM_TOKEN}"
+    app_bot.bot.set_webhook(url=url)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
